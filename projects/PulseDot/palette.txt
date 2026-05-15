@@ -1,0 +1,5 @@
+# Pulsing red dot
+A 661111
+B BB2222
+C FF4444
+D FF8888
