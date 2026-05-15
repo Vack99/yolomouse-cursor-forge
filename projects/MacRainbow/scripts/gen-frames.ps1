@@ -1,21 +1,25 @@
-# Generate rainbow-stripe animation frames from a silhouette mask.
-# - Reads mask.txt (a project file with `.` for transparent and `#` for filled).
-# - Marks every filled cell with at least one transparent 4-neighbor as W (outline).
-# - Marks strictly-interior filled cells with a rainbow palette letter using
-#   the formula: palette[(((x + y) - frame) mod period) / stripeWidth]
-# - Writes frame_NN.grid.txt files into projects/<Name>/frames/.
+# Project-local generator for MacRainbow's rainbow-stripe animation.
 #
-# Usage: .\tools\gen-rainbow-frames.ps1 -ProjectName MacRainbow
+# Reads ../mask.txt (the silhouette: `.` for transparent, `#` for filled).
+# Marks every filled cell with at least one transparent 4-neighbor as W (outline).
+# Marks strictly-interior filled cells with a rainbow palette letter using:
+#   palette[(((x + y) - frame) mod period) / stripeWidth]
+# Writes frame_NN.grid.txt files into ../frames/.
+#
+# Specific to MacRainbow's diagonal-stripe animation. If a future cursor needs
+# a similar generator, copy this and adapt; only extract a shared helper once
+# you actually have two callers and know what they need in common.
+#
+# Usage: .\projects\MacRainbow\scripts\gen-frames.ps1
 
 param(
-    [Parameter(Mandatory=$true)][string]$ProjectName,
     [int]$Frames = 12,
     [int]$Delay = 6,
     [string[]]$Palette = @('R','O','Y','G','B','P'),
     [int]$StripeWidth = 2
 )
 
-$projectRoot = Join-Path (Split-Path -Parent $PSScriptRoot) "projects\$ProjectName"
+$projectRoot = Split-Path -Parent $PSScriptRoot
 $maskPath = Join-Path $projectRoot 'mask.txt'
 $framesDir = Join-Path $projectRoot 'frames'
 
