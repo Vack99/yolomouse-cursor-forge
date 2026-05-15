@@ -48,9 +48,15 @@ A workshop where Aaron + Claude collaboratively design custom **animated cursors
 
 ## Authoring paths
 
-Two ways to produce frame grids. Pick per-cursor based on whether the animation is a formula over a fixed shape.
+Three ways to produce frames. Pick per-cursor.
 
-**Hand-paint** (default):
+**Recolor a real cursor** (best when the cursor is a variant of an existing real cursor):
+- If the design is "take a real Windows/YoloMouse cursor and change its colors", do NOT reconstruct the shape from a mask — **recolor the actual pixels**.
+- Extract the source cursor's largest frame: `tools\cur-to-png.ps1 <cur> <png>`. A project-local `scripts\gen-frames.ps1` then reads that base PNG and recolors per-pixel per frame.
+- **Preserve the source alpha channel untouched** — that carries the real cursor's anti-aliasing straight through, so there are no jaggies and no hand-built outline. This is what finally made MacRainbow look right.
+- Reference implementation: `projects\MacRainbow\` — recolors `aero_arrow.cur` (white fill → rainbow stripes, black outline kept). Emits `frame_NN.png`; `forge build` packs PNG frames directly.
+
+**Hand-paint** (default for original art):
 - Author each `frames\frame_NN.grid.txt` directly, one cell at a time.
 - Right when frames vary non-formulaically — character expressions, heartbeats, anything where each frame is its own decision — or for static cursors.
 - This is step 4 of the workflow above.
