@@ -126,3 +126,29 @@ function Read-DesignFrontMatter {
     }
     return $result
 }
+
+function Get-FrameBitmap {
+    param(
+        [Parameter(Mandatory)]$Grid,
+        [Parameter(Mandatory)][hashtable]$Palette
+    )
+    $bmp = New-Object System.Drawing.Bitmap $Grid.Width, $Grid.Height, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $transparent = [System.Drawing.Color]::FromArgb(0,0,0,0)
+    for ($y = 0; $y -lt $Grid.Height; $y++) {
+        $row = $Grid.Cells[$y]
+        for ($x = 0; $x -lt $Grid.Width; $x++) {
+            $ch = $row[$x]
+            if ($ch -eq '.') {
+                $bmp.SetPixel($x, $y, $transparent)
+            } else {
+                $key = [string]$ch
+                if (-not $Palette.ContainsKey($key)) {
+                    $bmp.Dispose()
+                    throw "row $y col ${x}: character '$key' not in palette"
+                }
+                $bmp.SetPixel($x, $y, $Palette[$key])
+            }
+        }
+    }
+    return $bmp
+}

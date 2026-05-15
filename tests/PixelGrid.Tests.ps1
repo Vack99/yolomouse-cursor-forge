@@ -109,3 +109,22 @@ Lots of design notes go here.
 Test-Case 'Read-DesignFrontMatter requires opening fence' {
     Assert-Throws { Read-DesignFrontMatter -Text "name: x" } 'fence'
 }
+
+Test-Case 'Get-FrameBitmap renders 2x2 with palette' {
+    $grid = Read-Grid -Text "# size 2x2`nAB`n.A"
+    $pal  = Read-Palette -Text "A FF0000`nB 00FF00"
+    $bmp  = Get-FrameBitmap -Grid $grid -Palette $pal
+    Assert-Equal 2 $bmp.Width
+    Assert-Equal 2 $bmp.Height
+    $c00 = $bmp.GetPixel(0,0); Assert-Equal 255 $c00.R; Assert-Equal 255 $c00.A
+    $c10 = $bmp.GetPixel(1,0); Assert-Equal 255 $c10.G
+    $c01 = $bmp.GetPixel(0,1); Assert-Equal 0   $c01.A 'dot is transparent'
+    $c11 = $bmp.GetPixel(1,1); Assert-Equal 255 $c11.R
+    $bmp.Dispose()
+}
+
+Test-Case 'Get-FrameBitmap rejects unknown palette letter' {
+    $grid = Read-Grid -Text "# size 1x1`nZ"
+    $pal  = Read-Palette -Text "A FF0000"
+    Assert-Throws { Get-FrameBitmap -Grid $grid -Palette $pal } "'Z'"
+}
