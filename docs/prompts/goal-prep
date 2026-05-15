@@ -1,0 +1,35 @@
+/goal <ONE-LINE OBJECTIVE — the headline of what "done" looks like>
+
+END STATE
+- <The single measurable condition that means the work is finished>
+- <The exact sentinel string Claude must emit when complete, so the
+  evaluator has unambiguous transcript evidence>
+
+CHECK (how Claude proves progress, turn by turn)
+- <Per-task evidence: e.g. "test suite exits 0 for the touched module">
+- <Per-task evidence: e.g. "git commit message references the issue filename">
+- <The sentinel line above must appear verbatim when the queue is empty>
+
+TASK SELECTION (each turn — pick exactly one)
+Issues live at <PATH>. Work only on <SCOPE TAG>. Pick the next one in this order:
+1. Critical bug fixes
+2. Development infrastructure
+3. Vertical tracer bullets (thin end-to-end slices)
+4. Polish, quick wins, refactors
+Within a tier, smallest scope first.
+
+EXECUTION (per task)
+- Read the issue file in full before editing anything.
+- Explore the relevant repo area; do not assume structure.
+- Use TDD: write or update the failing test first, then make it pass.
+- Run feedback loops (tests, type-check, lint) and surface output in chat.
+- Commit per issue: "<type>(<scope>): <summary> — closes <issue-file>".
+
+CONSTRAINTS
+- Touch only files within the active issue's stated scope.
+- Do not invent new issues. If scope creep is required, stop and surface it.
+- If an issue is blocked, emit "[BLOCKED] <issue>: <reason>" and move on.
+- <PATH>/<SCOPE TAG> filter is absolute — ignore everything else.
+
+CAP
+- Stop after <N> turns OR when the sentinel line is emitted, whichever first.
