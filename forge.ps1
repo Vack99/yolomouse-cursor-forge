@@ -144,6 +144,36 @@ function Invoke-Build {
     foreach ($b in $bitmaps) { $b.Dispose() }
 }
 
+function Invoke-Install {
+    param([Parameter(Mandatory)][string]$Name)
+    if (-not (Test-Path $Script:YoloMouseRoot)) {
+        throw "forge install: YoloMouse not found at $($Script:YoloMouseRoot)"
+    }
+    $buildDir = Join-Path $Script:RepoRoot "projects\$Name\build"
+    if (-not (Test-Path $buildDir)) { throw "forge install: '$Name' has no build/. Run 'forge build $Name' first." }
+    $dest = Join-Path $Script:YoloMouseRoot "Cursors\$Name"
+    if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
+    foreach ($f in "$Name.ani", 'Bundle.json', 'Preview.png') {
+        $src = Join-Path $buildDir $f
+        if (-not (Test-Path $src)) { throw "forge install: missing $src" }
+        Copy-Item -Force $src $dest
+    }
+    Write-Host "Installed $Name to $dest" -ForegroundColor Green
+}
+
+function Invoke-Uninstall {
+    param([Parameter(Mandatory)][string]$Name, [switch]$Force)
+    $dir = Join-Path $Script:YoloMouseRoot "Cursors\$Name"
+    if (-not (Test-Path $dir)) { Write-Host "forge uninstall: '$Name' not installed (no $dir)"; return }
+    if (-not $Force) {
+        Write-Host "Would delete: $dir" -ForegroundColor Yellow
+        Write-Host "Re-run with -Force to actually remove."
+        return
+    }
+    Remove-Item -Recurse -Force $dir
+    Write-Host "Removed $dir" -ForegroundColor Green
+}
+
 function Invoke-Preview {
     param([Parameter(Mandatory)][string]$Name)
     $buildDir = Join-Path $Script:RepoRoot "projects\$Name\build"
@@ -173,6 +203,16 @@ function Invoke-List {
 }
 
 switch ($Verb) {
+    'install' {
+        if (-not $Name) { throw 'forge install: <Name> is required' }
+        Invoke-Install -Name $Name
+        exit 0
+    }
+    'uninstall' {
+        if (-not $Name) { throw 'forge uninstall: <Name> is required' }
+        Invoke-Uninstall -Name $Name -Force:$Force
+        exit 0
+    }
     'preview' {
         if (-not $Name) { throw 'forge preview: <Name> is required' }
         Invoke-Preview -Name $Name
