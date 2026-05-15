@@ -43,6 +43,7 @@ Test-Case 'Get-CurBytes ICONDIRENTRY has correct width/height/hotspot/offset' {
     $b.Dispose()
 }
 
+# Task 3.2: lock DIB header and mask byte layout against future regressions
 Test-Case 'Get-CurBytes BITMAPINFOHEADER has biSize=40 biWidth=W biHeight=2H biPlanes=1 biBitCount=32' {
     $b = New-TestBitmap2x2
     $bytes = Get-CurBytes -Bitmap $b -HotspotX 0 -HotspotY 0
