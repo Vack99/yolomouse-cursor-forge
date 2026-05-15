@@ -1,0 +1,11 @@
+# MacRainbow — Apple-system color palette
+# W = white outline (keeps macOS recognizability)
+# Rainbow letters use Apple's system colors (Big Sur+) for thematic coherence
+
+W FFFFFF
+R FF3B30
+O FF9500
+Y FFCC00
+G 34C759
+B 007AFF
+P AF52DE
