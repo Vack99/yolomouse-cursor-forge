@@ -80,3 +80,32 @@ Test-Case 'Read-Grid rejects wrong column count' {
         Read-Grid -Text "# size 3x2`n..`n..."
     } 'columns'
 }
+
+Test-Case 'Read-DesignFrontMatter extracts key-value pairs' {
+    $body = @"
+---
+name: PulseDot
+description: A breathing red dot
+size: 64x64
+frames: 8
+default_delay: 6
+default_hotspot: 32,32
+---
+# Free-form prose
+
+Lots of design notes go here.
+"@
+    $d = Read-DesignFrontMatter -Text $body
+    Assert-Equal 'PulseDot' $d.Name
+    Assert-Equal 'A breathing red dot' $d.Description
+    Assert-Equal 64 $d.Width
+    Assert-Equal 64 $d.Height
+    Assert-Equal 8 $d.Frames
+    Assert-Equal 6 $d.DefaultDelay
+    Assert-Equal 32 $d.DefaultHotspot.X
+    Assert-Equal 32 $d.DefaultHotspot.Y
+}
+
+Test-Case 'Read-DesignFrontMatter requires opening fence' {
+    Assert-Throws { Read-DesignFrontMatter -Text "name: x" } 'fence'
+}

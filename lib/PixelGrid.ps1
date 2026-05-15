@@ -88,3 +88,41 @@ function Read-Grid {
         Cells   = @($cells)
     }
 }
+
+function Read-DesignFrontMatter {
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(Mandatory, ParameterSetName='Path')][string]$Path,
+        [Parameter(Mandatory, ParameterSetName='Text')][string]$Text
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        if (-not (Test-Path $Path)) { throw "design file not found: $Path" }
+        $Text = Get-Content -Raw -Path $Path
+    }
+    $lines = $Text -split "`r?`n"
+    if ($lines.Count -lt 1 -or $lines[0].Trim() -ne '---') {
+        throw "design.md must open with a '---' fence on line 1"
+    }
+    $kv = @{}
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Trim() -eq '---') { break }
+        if ($lines[$i] -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$') {
+            $kv[$Matches[1]] = $Matches[2]
+        }
+    }
+    $result = @{
+        Name           = $kv['name']
+        Description    = $kv['description']
+        Frames         = if ($kv['frames']) { [int]$kv['frames'] } else { 8 }
+        DefaultDelay   = if ($kv['default_delay']) { [int]$kv['default_delay'] } else { 6 }
+    }
+    if ($kv['size'] -match '^\s*(\d+)\s*x\s*(\d+)\s*$') {
+        $result.Width = [int]$Matches[1]; $result.Height = [int]$Matches[2]
+    } else { $result.Width = 64; $result.Height = 64 }
+    if ($kv['default_hotspot'] -match '^\s*(\d+)\s*,\s*(\d+)\s*$') {
+        $result.DefaultHotspot = @{ X=[int]$Matches[1]; Y=[int]$Matches[2] }
+    } else {
+        $result.DefaultHotspot = @{ X = [int]([math]::Floor($result.Width/2)); Y = [int]([math]::Floor($result.Height/2)) }
+    }
+    return $result
+}
