@@ -87,6 +87,63 @@ function Invoke-New {
     Write-Host "Created projects\$Name with $Frames frames at ${Size}x${Size}." -ForegroundColor Green
 }
 
+function Invoke-Build {
+    param([Parameter(Mandatory)][string]$Name)
+    $projDir = Join-Path $Script:RepoRoot "projects\$Name"
+    if (-not (Test-Path $projDir)) { throw "forge build: project '$Name' not found at $projDir" }
+    $designPath  = Join-Path $projDir 'design.md'
+    $palettePath = Join-Path $projDir 'palette.txt'
+    $framesDir   = Join-Path $projDir 'frames'
+    $buildDir    = Join-Path $projDir 'build'
+    foreach ($p in $designPath, $palettePath) {
+        if (-not (Test-Path $p)) { throw "forge build: missing $p" }
+    }
+    $design  = Read-DesignFrontMatter -Path $designPath
+    $palette = Read-Palette -Path $palettePath
+    $gridFiles = @(Get-ChildItem $framesDir -Filter '*.grid.txt' | Sort-Object Name)
+    if ($gridFiles.Count -eq 0) { throw "forge build: no frame_*.grid.txt files in $framesDir" }
+
+    $bitmaps = @()
+    $delays  = @()
+    $hotspot = $design.DefaultHotspot
+    $firstHotspotOverride = $null
+    for ($i = 0; $i -lt $gridFiles.Count; $i++) {
+        $g = Read-Grid -Path $gridFiles[$i].FullName
+        if ($g.Width -ne $design.Width -or $g.Height -ne $design.Height) {
+            throw "$($gridFiles[$i].Name): size $($g.Width)x$($g.Height) != project size $($design.Width)x$($design.Height)"
+        }
+        try {
+            $bmp = Get-FrameBitmap -Grid $g -Palette $palette
+        } catch {
+            throw "$($gridFiles[$i].Name): $($_.Exception.Message)"
+        }
+        $bitmaps += $bmp
+        $delays  += if ($g.Delay) { $g.Delay } else { $design.DefaultDelay }
+        if ($i -eq 0 -and $g.Hotspot) { $firstHotspotOverride = $g.Hotspot }
+        if ($i -gt 0 -and $g.Hotspot) {
+            Write-Warning "$($gridFiles[$i].Name): per-frame hotspot ignored (Windows .ani uses frame_00's hotspot for all frames)"
+        }
+    }
+    if ($firstHotspotOverride) { $hotspot = $firstHotspotOverride }
+
+    if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
+    New-Item -ItemType Directory -Path $buildDir | Out-Null
+
+    $desc = if ($design.Description) { $design.Description } else { $Name }
+
+    Save-FramePngs -OutDir $buildDir -Bitmaps $bitmaps
+    Save-AniFile  -Path (Join-Path $buildDir "$Name.ani") -Bitmaps $bitmaps -HotspotX $hotspot.X -HotspotY $hotspot.Y -DefaultDelay $design.DefaultDelay -PerFrameDelays $delays
+    Save-Bundle   -OutDir $buildDir -Name $Name -Description $desc
+    Save-PreviewStrip -Path (Join-Path $buildDir 'preview_strip.png') -Bitmaps $bitmaps
+    Save-GifFile  -Path (Join-Path $buildDir 'preview.gif') -Bitmaps $bitmaps -PerFrameDelaysJiffies $delays
+
+    $totalCs = ($delays | Measure-Object -Sum).Sum * 100.0 / 60.0
+    Write-Host ("Built {0}: {1} frames, ~{2:N0}ms loop" -f $Name, $bitmaps.Count, $totalCs) -ForegroundColor Green
+    Write-Host "  -> $buildDir"
+
+    foreach ($b in $bitmaps) { $b.Dispose() }
+}
+
 function Invoke-List {
     $projectsDir = Join-Path $Script:RepoRoot 'projects'
     if (-not (Test-Path $projectsDir)) { Write-Host '(no projects yet)'; return }
@@ -106,6 +163,11 @@ function Invoke-List {
 }
 
 switch ($Verb) {
+    'build' {
+        if (-not $Name) { throw 'forge build: <Name> is required' }
+        Invoke-Build -Name $Name
+        exit 0
+    }
     'list' { Invoke-List; exit 0 }
     'new' {
         $f = if ($PSBoundParameters.ContainsKey('Frames')) { $Frames } else { 8 }

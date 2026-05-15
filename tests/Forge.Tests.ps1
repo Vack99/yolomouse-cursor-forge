@@ -67,3 +67,32 @@ Test-Case 'forge list shows project names and status columns' {
         } finally { Pop-Location }
     } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
 }
+
+Test-Case 'forge build produces .ani + Bundle.json + previews' {
+    $tmpRepo = New-TempDir
+    try {
+        Copy-Item -Recurse "$PSScriptRoot\..\projects\_template" (Join-Path $tmpRepo 'projects\_template')
+        Copy-Item -Recurse "$PSScriptRoot\..\lib" (Join-Path $tmpRepo 'lib')
+        Copy-Item "$PSScriptRoot\..\forge.ps1" (Join-Path $tmpRepo 'forge.ps1')
+        Push-Location $tmpRepo
+        try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 new Dot -Size 8 -Frames 8 | Out-Null
+            # Provide a minimal palette and a single-pixel frame so build has something to compile
+            Set-Content projects\Dot\palette.txt "A FF0000`r`nB 00FF00" -Encoding ascii
+            $row = ('.' * 8)
+            # Make frame 0 a single red pixel; rest stay all-dots
+            $f0 = "# size 8x8`r`n# hotspot 4,4`r`n# delay 6`r`n" + (@($row,$row,$row,'....A...','...AA...',$row,$row,$row) -join "`r`n")
+            Set-Content projects\Dot\frames\frame_00.grid.txt $f0 -Encoding ascii
+            & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 build Dot 2>&1 | Out-Null
+            Assert-True (Test-Path 'projects\Dot\build\Dot.ani') '.ani exists'
+            Assert-True (Test-Path 'projects\Dot\build\Bundle.json') 'Bundle.json exists'
+            Assert-True (Test-Path 'projects\Dot\build\Preview.png') 'Preview.png exists'
+            Assert-True (Test-Path 'projects\Dot\build\preview.gif') 'preview.gif exists'
+            Assert-True (Test-Path 'projects\Dot\build\preview_strip.png') 'preview_strip.png exists'
+            $aniPath = Join-Path $tmpRepo 'projects\Dot\build\Dot.ani'
+            $aniBytes = [System.IO.File]::ReadAllBytes($aniPath)
+            $sig = -join ($aniBytes[0..3] | ForEach-Object { [char]$_ })
+            Assert-Equal 'RIFF' $sig 'starts with RIFF'
+        } finally { Pop-Location }
+    } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
+}
