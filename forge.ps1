@@ -45,7 +45,55 @@ Repo root:      $($Script:RepoRoot)
 "@
 }
 
+function Invoke-New {
+    param([string]$Name, [int]$Frames = 8, [int]$Size = 64)
+    if (-not $Name) { throw "forge new: <Name> is required" }
+    if ($Frames -notin 8,12,24) { throw "forge new: -Frames must be 8, 12, or 24 (got $Frames)" }
+    $projDir = Join-Path $Script:RepoRoot "projects\$Name"
+    if (Test-Path $projDir) { throw "forge new: '$Name' already exists at $projDir" }
+    $template = Join-Path $Script:RepoRoot 'projects\_template'
+    if (-not (Test-Path $template)) { throw "forge new: template not found at $template" }
+
+    Copy-Item -Recurse $template $projDir
+    # Substitute {{Name}}
+    foreach ($f in 'brief.md','design.md') {
+        $p = Join-Path $projDir $f
+        if (Test-Path $p) {
+            (Get-Content -Raw $p).Replace('{{Name}}', $Name) | Set-Content $p -Encoding utf8
+        }
+    }
+    # Update design.md front-matter size/frames
+    $designPath = Join-Path $projDir 'design.md'
+    $design = Get-Content -Raw $designPath
+    $design = $design -replace 'size:\s*\d+x\d+', "size: ${Size}x${Size}"
+    $design = $design -replace 'frames:\s*\d+', "frames: $Frames"
+    $center = [int]([math]::Floor($Size/2))
+    $design = $design -replace 'default_hotspot:\s*\d+,\d+', "default_hotspot: $center,$center"
+    Set-Content $designPath $design -Encoding utf8
+
+    # Regenerate grid files at the requested size and count
+    $framesDir = Join-Path $projDir 'frames'
+    Get-ChildItem $framesDir -Filter '*.grid.txt' | Remove-Item -Force
+    $row = ('.' * $Size)
+    $body = (@(
+        "# size ${Size}x${Size}"
+        "# hotspot $center,$center"
+        "# delay 6"
+    ) + (1..$Size | ForEach-Object { $row })) -join "`r`n"
+    for ($i = 0; $i -lt $Frames; $i++) {
+        $fname = 'frame_{0:D2}.grid.txt' -f $i
+        Set-Content (Join-Path $framesDir $fname) $body -Encoding ascii
+    }
+    Write-Host "Created projects\$Name with $Frames frames at ${Size}x${Size}." -ForegroundColor Green
+}
+
 switch ($Verb) {
+    'new' {
+        $f = if ($PSBoundParameters.ContainsKey('Frames')) { $Frames } else { 8 }
+        $s = if ($PSBoundParameters.ContainsKey('Size'))   { $Size }   else { 64 }
+        Invoke-New -Name $Name -Frames $f -Size $s
+        exit 0
+    }
     ''     { Show-Help; exit 0 }
     'help' { Show-Help; exit 0 }
     default {
