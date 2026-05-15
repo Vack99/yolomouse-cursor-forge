@@ -104,6 +104,8 @@ S 1A1A1A80    (with 80 alpha)
 - **`.ani` is single-resolution.** YoloMouse's size slider does the downscaling. Don't try to multi-pack sizes.
 - **Hotspot is baked into the file.** Windows uses frame_00's hotspot for the whole animation regardless of what other frames declare.
 - **AND mask is required** in each inner `.cur` chunk even for 32-bit RGBA — some Windows parsers crash without it. Emit zeros.
+- **Anti-aliased edges are the top quality lever** — not raw resolution. Hard opaque/transparent cells make diagonals staircase. Emit partial-alpha edge cells to smooth them. Reach for AA before bumping canvas size.
+- **Resolution scales with detail, not a fixed default.** Simple geometric cursors: 64–128. Detailed illustration cursors: up to 256. Past ~128, a simple shape only gains finer staircase — AA fixes that cheaper. 256×256 means large files + slow per-cell PowerShell builds; reserve it for real detail.
 
 ## What this repo does NOT do (YAGNI)
 

@@ -1,110 +1,136 @@
-# Project-local generator for MacRainbow's rainbow-stripe animation.
+# MacRainbow frame generator.
 #
-# Reads ../mask.txt (the silhouette: `.` for transparent, `#` for filled).
-# Marks every filled cell with at least one transparent 4-neighbor as W (outline).
-# Marks strictly-interior filled cells with a rainbow palette letter using:
-#   palette[(((x + y) - frame) mod period) / stripeWidth]
-# Writes frame_NN.grid.txt files into ../frames/.
+# Builds the rainbow pointer by RECOLOURING the real Windows pointer rather
+# than reconstructing its shape. pointer-base.png is the 128px frame of
+# Windows' aero_arrow.cur (white fill, black outline, anti-aliased edges).
 #
-# Specific to MacRainbow's diagonal-stripe animation. If a future cursor needs
-# a similar generator, copy this and adapt; only extract a shared helper once
-# you actually have two callers and know what they need in common.
+# For every frame the base image is recoloured pixel-for-pixel:
+#   - fully transparent pixels stay transparent
+#   - dark pixels (the outline) stay black
+#   - light pixels (the fill) become a diagonal rainbow stripe colour
+# The source ALPHA is preserved exactly, so the real cursor's anti-aliased
+# edges carry straight through — no jaggies, no hand-painted outline.
+#
+# Output: frames/frame_NN.png at the final canvas size. forge build packs
+# PNG frames directly (no .grid.txt for this cursor).
 #
 # Usage: .\projects\MacRainbow\scripts\gen-frames.ps1
 
 param(
     [int]$Frames = 12,
-    [int]$Delay = 6,
-    [string[]]$Palette = @('R','O','Y','G','B','P'),
-    [int]$StripeWidth = 2
+    [int]$Canvas = 96,        # final cursor canvas (square)
+    [int]$StripeWidth = 6,    # rainbow stripe width in final pixels
+    [int]$DarkThreshold = 128 # luminance <= this is outline, above is fill
 )
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
-$maskPath = Join-Path $projectRoot 'mask.txt'
-$framesDir = Join-Path $projectRoot 'frames'
+Add-Type -AssemblyName System.Drawing
 
-if (-not (Test-Path $maskPath)) {
-    Write-Error "Mask file not found: $maskPath"
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$basePath   = Join-Path $projectRoot 'pointer-base.png'
+$palettePath = Join-Path $projectRoot 'palette.txt'
+$framesDir  = Join-Path $projectRoot 'frames'
+
+if (-not (Test-Path $basePath))    { Write-Error "Missing $basePath"; exit 1 }
+if (-not (Test-Path $palettePath)) { Write-Error "Missing $palettePath"; exit 1 }
+
+# --- Rainbow palette (R,O,Y,G,B,P) from palette.txt ---
+$order = 'R','O','Y','G','B','P'
+$hex = @{}
+foreach ($line in Get-Content $palettePath) {
+    $t = $line.Trim()
+    if ($t -eq '' -or $t.StartsWith('#')) { continue }
+    $p = $t -split '\s+', 2
+    if ($p.Count -eq 2 -and $p[0].Length -eq 1) { $hex[$p[0]] = $p[1].Trim() }
+}
+# List[int[]] so each colour stays a 3-element array (a bare foreach would
+# unroll the arrays into one flat list of ints).
+$rainbow = New-Object 'System.Collections.Generic.List[int[]]'
+foreach ($k in $order) {
+    if (-not $hex.ContainsKey($k)) { Write-Error "palette.txt missing '$k'"; exit 1 }
+    $h = $hex[$k]
+    $rainbow.Add([int[]]@(
+        [Convert]::ToInt32($h.Substring(0,2),16),
+        [Convert]::ToInt32($h.Substring(2,2),16),
+        [Convert]::ToInt32($h.Substring(4,2),16)
+    ))
+}
+$period = $order.Count * $StripeWidth
+# Shift per frame so the pattern advances exactly one period over $Frames frames
+# (seamless loop). period must be divisible by frame count.
+if ($period % $Frames -ne 0) {
+    Write-Error "period ($period) must be divisible by frame count ($Frames) for a seamless loop"
     exit 1
 }
+$shift = $period / $Frames
 
-# Parse mask: extract headers and grid rows.
-$maskLines = Get-Content $maskPath
-$size = $null; $hotspot = $null
-$grid = @()
-foreach ($line in $maskLines) {
-    if ($line -match '^\s*#\s*size\s+(\d+)x(\d+)') {
-        $size = @{ W = [int]$Matches[1]; H = [int]$Matches[2] }
-    } elseif ($line -match '^\s*#\s*hotspot\s+(\d+)\s*,\s*(\d+)') {
-        $hotspot = "$($Matches[1]),$($Matches[2])"
-    } elseif ($line -match '^\s*#') {
-        # comment, skip
-    } elseif ($line.Length -gt 0) {
-        $grid += $line
+# --- Load base, crop to opaque content, scale to fill the canvas height ---
+$src = [System.Drawing.Bitmap]::FromFile($basePath)
+$minX=$src.Width;$minY=$src.Height;$maxX=-1;$maxY=-1
+for ($y=0;$y -lt $src.Height;$y++){
+  for ($x=0;$x -lt $src.Width;$x++){
+    if ($src.GetPixel($x,$y).A -gt 8){
+      if($x -lt $minX){$minX=$x}; if($y -lt $minY){$minY=$y}
+      if($x -gt $maxX){$maxX=$x}; if($y -gt $maxY){$maxY=$y}
     }
+  }
 }
+$cropW = $maxX-$minX+1; $cropH = $maxY-$minY+1
+# Scale so the pointer height fills the canvas; width follows aspect.
+$scale = $Canvas / $cropH
+$dstW = [int][Math]::Round($cropW * $scale)
+$dstH = $Canvas
 
-if (-not $size) { Write-Error "Mask missing '# size WxH' header"; exit 1 }
-$W = $size.W; $H = $size.H
-if ($grid.Count -ne $H) { Write-Error "Mask has $($grid.Count) rows, expected $H"; exit 1 }
+$base = New-Object System.Drawing.Bitmap($Canvas, $Canvas, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$g = [System.Drawing.Graphics]::FromImage($base)
+$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+$g.PixelOffsetMode  = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+$g.DrawImage($src,
+    (New-Object System.Drawing.Rectangle(0, 0, $dstW, $dstH)),
+    $minX, $minY, $cropW, $cropH, [System.Drawing.GraphicsUnit]::Pixel)
+$g.Dispose()
+$src.Dispose()
 
-# Build a 2D fill array.
-$filled = New-Object 'bool[,]' $H, $W
-for ($y = 0; $y -lt $H; $y++) {
-    $row = $grid[$y]
-    if ($row.Length -ne $W) { Write-Error "Row $y has length $($row.Length), expected $W"; exit 1 }
-    for ($x = 0; $x -lt $W; $x++) {
-        $filled[$y, $x] = ($row[$x] -ne '.')
-    }
-}
+# --- Read the recoloured-ready base into a byte buffer (BGRA) ---
+$rect = New-Object System.Drawing.Rectangle(0, 0, $Canvas, $Canvas)
+$bd = $base.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$stride = $bd.Stride
+$buf = New-Object byte[] ($stride * $Canvas)
+[System.Runtime.InteropServices.Marshal]::Copy($bd.Scan0, $buf, 0, $buf.Length)
+$base.UnlockBits($bd)
+$base.Dispose()
 
-# Classify each filled cell as OUTLINE (touches transparent 4-neighbor) or INTERIOR.
-$isOutline = New-Object 'bool[,]' $H, $W
-for ($y = 0; $y -lt $H; $y++) {
-    for ($x = 0; $x -lt $W; $x++) {
-        if (-not $filled[$y, $x]) { continue }
-        $border = $false
-        foreach ($d in @(@(0,-1), @(0,1), @(-1,0), @(1,0))) {
-            $ny = $y + $d[0]; $nx = $x + $d[1]
-            if ($ny -lt 0 -or $ny -ge $H -or $nx -lt 0 -or $nx -ge $W) {
-                $border = $true; break
-            }
-            if (-not $filled[$ny, $nx]) { $border = $true; break }
-        }
-        $isOutline[$y, $x] = $border
-    }
-}
-
-# Emit frames.
+# --- Emit frames ---
 if (-not (Test-Path $framesDir)) { New-Item -ItemType Directory -Path $framesDir | Out-Null }
-# Wipe old frames so frame count changes don't leave stragglers.
-Get-ChildItem $framesDir -Filter 'frame_*.grid.txt' | Remove-Item -Force
+Get-ChildItem $framesDir -Filter 'frame_*' | Remove-Item -Force
 
-$period = $Palette.Count * $StripeWidth
 for ($f = 0; $f -lt $Frames; $f++) {
-    $lines = @()
-    $lines += "# size ${W}x${H}"
-    # Windows .ani uses frame_00's hotspot for the whole animation; emit on frame 0 only.
-    if ($hotspot -and $f -eq 0) { $lines += "# hotspot $hotspot" }
-    $lines += "# delay $Delay"
-    for ($y = 0; $y -lt $H; $y++) {
-        $rowChars = New-Object char[] $W
-        for ($x = 0; $x -lt $W; $x++) {
-            if (-not $filled[$y, $x]) {
-                $rowChars[$x] = '.'
-            } elseif ($isOutline[$y, $x]) {
-                $rowChars[$x] = 'W'
+    $out = New-Object byte[] $buf.Length
+    for ($y = 0; $y -lt $Canvas; $y++) {
+        $rowBase = $y * $stride
+        for ($x = 0; $x -lt $Canvas; $x++) {
+            $i = $rowBase + $x * 4
+            $a = $buf[$i+3]
+            if ($a -eq 0) { continue }   # leave transparent
+            $b = $buf[$i]; $gr = $buf[$i+1]; $r = $buf[$i+2]
+            $lum = ($r + $gr + $b) / 3
+            if ($lum -le $DarkThreshold) {
+                # outline -> black, keep alpha
+                $out[$i] = 0; $out[$i+1] = 0; $out[$i+2] = 0; $out[$i+3] = $a
             } else {
-                $idx = ((($x + $y) - $f) % $period + $period) % $period
-                $palIdx = [Math]::Floor($idx / $StripeWidth)
-                $rowChars[$x] = $Palette[$palIdx][0]
+                # fill -> rainbow stripe colour, keep alpha
+                $idx = ((($x + $y) - $f * $shift) % $period + $period) % $period
+                $c = $rainbow[[int][Math]::Floor($idx / $StripeWidth)]
+                $out[$i] = $c[2]; $out[$i+1] = $c[1]; $out[$i+2] = $c[0]; $out[$i+3] = $a
             }
         }
-        $lines += -join $rowChars
     }
-    $name = "frame_{0:D2}.grid.txt" -f $f
-    $path = Join-Path $framesDir $name
-    Set-Content -Path $path -Value $lines -Encoding utf8
+    $bmp = New-Object System.Drawing.Bitmap($Canvas, $Canvas, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $wb = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::WriteOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    [System.Runtime.InteropServices.Marshal]::Copy($out, 0, $wb.Scan0, $out.Length)
+    $bmp.UnlockBits($wb)
+    $name = "frame_{0:D2}.png" -f $f
+    $bmp.Save((Join-Path $framesDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
 }
 
-Write-Output "Generated $Frames frames in $framesDir"
+Write-Output "Generated $Frames PNG frames (${Canvas}x${Canvas}) in $framesDir"
