@@ -100,31 +100,51 @@ function Invoke-Build {
     }
     $design  = Read-DesignFrontMatter -Path $designPath
     $palette = Read-Palette -Path $palettePath
+    $pngFiles  = @(Get-ChildItem $framesDir -Filter 'frame_*.png' | Sort-Object Name)
     $gridFiles = @(Get-ChildItem $framesDir -Filter '*.grid.txt' | Sort-Object Name)
-    if ($gridFiles.Count -eq 0) { throw "forge build: no frame_*.grid.txt files in $framesDir" }
 
     $bitmaps = @()
     $delays  = @()
     $hotspot = $design.DefaultHotspot
-    $firstHotspotOverride = $null
-    for ($i = 0; $i -lt $gridFiles.Count; $i++) {
-        $g = Read-Grid -Path $gridFiles[$i].FullName
-        if ($g.Width -ne $design.Width -or $g.Height -ne $design.Height) {
-            throw "$($gridFiles[$i].Name): size $($g.Width)x$($g.Height) != project size $($design.Width)x$($design.Height)"
+
+    if ($pngFiles.Count -gt 0) {
+        # PNG frame mode: frames are pre-rendered bitmaps (e.g. from a project
+        # generator that does its own anti-aliasing). No grid/palette involved.
+        foreach ($pf in $pngFiles) {
+            $loaded = [System.Drawing.Bitmap]::FromFile($pf.FullName)
+            $w = $loaded.Width; $h = $loaded.Height
+            if ($w -ne $design.Width -or $h -ne $design.Height) {
+                $loaded.Dispose()
+                throw "$($pf.Name): size ${w}x${h} != project size $($design.Width)x$($design.Height)"
+            }
+            # FromFile holds a file lock; clone to a standalone bitmap and release.
+            $bitmaps += New-Object System.Drawing.Bitmap($loaded)
+            $loaded.Dispose()
+            $delays  += $design.DefaultDelay
         }
-        try {
-            $bmp = Get-FrameBitmap -Grid $g -Palette $palette
-        } catch {
-            throw "$($gridFiles[$i].Name): $($_.Exception.Message)"
+    } elseif ($gridFiles.Count -gt 0) {
+        $firstHotspotOverride = $null
+        for ($i = 0; $i -lt $gridFiles.Count; $i++) {
+            $g = Read-Grid -Path $gridFiles[$i].FullName
+            if ($g.Width -ne $design.Width -or $g.Height -ne $design.Height) {
+                throw "$($gridFiles[$i].Name): size $($g.Width)x$($g.Height) != project size $($design.Width)x$($design.Height)"
+            }
+            try {
+                $bmp = Get-FrameBitmap -Grid $g -Palette $palette
+            } catch {
+                throw "$($gridFiles[$i].Name): $($_.Exception.Message)"
+            }
+            $bitmaps += $bmp
+            $delays  += if ($g.Delay) { $g.Delay } else { $design.DefaultDelay }
+            if ($i -eq 0 -and $g.Hotspot) { $firstHotspotOverride = $g.Hotspot }
+            if ($i -gt 0 -and $g.Hotspot) {
+                Write-Warning "$($gridFiles[$i].Name): per-frame hotspot ignored (Windows .ani uses frame_00's hotspot for all frames)"
+            }
         }
-        $bitmaps += $bmp
-        $delays  += if ($g.Delay) { $g.Delay } else { $design.DefaultDelay }
-        if ($i -eq 0 -and $g.Hotspot) { $firstHotspotOverride = $g.Hotspot }
-        if ($i -gt 0 -and $g.Hotspot) {
-            Write-Warning "$($gridFiles[$i].Name): per-frame hotspot ignored (Windows .ani uses frame_00's hotspot for all frames)"
-        }
+        if ($firstHotspotOverride) { $hotspot = $firstHotspotOverride }
+    } else {
+        throw "forge build: no frame_*.png or frame_*.grid.txt files in $framesDir"
     }
-    if ($firstHotspotOverride) { $hotspot = $firstHotspotOverride }
 
     if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
     New-Item -ItemType Directory -Path $buildDir | Out-Null
@@ -201,7 +221,11 @@ function Invoke-List {
     if (-not (Test-Path $projectsDir)) { Write-Host '(no projects yet)'; return }
     $rows = @()
     Get-ChildItem $projectsDir -Directory | Where-Object { $_.Name -ne '_template' } | ForEach-Object {
-        $frameCount = (Get-ChildItem (Join-Path $_.FullName 'frames') -Filter '*.grid.txt' -ErrorAction SilentlyContinue).Count
+        $framesPath = Join-Path $_.FullName 'frames'
+        $frameCount = (Get-ChildItem $framesPath -Filter '*.grid.txt' -ErrorAction SilentlyContinue).Count
+        if ($frameCount -eq 0) {
+            $frameCount = (Get-ChildItem $framesPath -Filter 'frame_*.png' -ErrorAction SilentlyContinue).Count
+        }
         $built = Test-Path (Join-Path $_.FullName "build\$($_.Name).ani")
         $installed = Test-Path (Join-Path $Script:YoloMouseRoot "Cursors\$($_.Name)")
         $rows += [pscustomobject]@{
