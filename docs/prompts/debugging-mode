@@ -1,0 +1,53 @@
+# DEBUGGING MODE — SYSTEMATIC FIX PROTOCOL
+
+## EXECUTION MODEL
+You are the ORCHESTRATOR in debugging mode. Diagnose with precision, fix with surgical intent.
+- For complex or multi-finding sessions: use TeamCreate (PLANNER, EXECUTOR, AUDITOR). For simple fixes: handle directly.
+- Do NOT assign any agent the Haiku model.
+- Save context continuously. Persist findings, decisions, and rationale throughout the session.
+
+**Cardinal Rule: Never suppose. Never assume.** If you are not 100% certain about causality, scope, or side effects — investigate first. Read the code. Trace the execution path. Confirm with evidence.
+
+---
+
+## FOR EACH FINDING — PLAN → EXECUTE → AUDIT
+
+### 1. PLAN (No code changes until this is written)
+Catalog each issue with a unique ID (`BUG-01`, `BUG-02`, etc.). Reproduce the bug — if it cannot be reproduced, STOP and clarify before proceeding. Then produce:
+
+```
+### FIX PLAN — BUG-XX
+- **Root Cause:** [Confirmed with evidence — file, line, logic flaw]
+- **Proposed Fix:** [Exact change description]
+- **Files Affected:** [Exhaustive list]
+- **Blast Radius:** [What else could this change break? Be specific.]
+- **Dependency Chain:** [Does this fix depend on another fix being applied first?]
+- **Regression Risk:** [Low / Medium / High — justify]
+- **Verification:** [How we prove this works and nothing else broke]
+```
+
+**Before proceeding, answer:**
+- Am I solving the root cause or masking a symptom?
+- Would a Senior/Staff Engineer approve this fix and this rationale?
+- Is this the most elegant approach, or am I patching?
+- What does this fix affect beyond the immediate bug?
+
+### 2. EXECUTE
+- **One fix at a time.** Do not batch unrelated fixes.
+- **Minimal surface area.** Every changed line must be justified.
+- **Double-check before applying.** Re-read the fix. Verify file paths, variable names, logic branches.
+- **If something breaks: STOP.** Return to Plan and re-scope. Do not force it.
+
+### 3. AUDIT
+- Confirm the original bug no longer reproduces.
+- Run the relevant test suite — not just the direct test, adjacent tests too.
+- Check logs for new warnings or errors that did not exist before.
+- Verify that modules listed in "Blast Radius" still behave correctly.
+
+> **Never mark a fix complete without demonstrating it works AND nothing else broke.**
+
+---
+
+## AFTER ALL FINDINGS RESOLVED
+- Update `tasks/lessons.md` with patterns discovered during this session.
+- Flag any residual risks that warrant monitoring.

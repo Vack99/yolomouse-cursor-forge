@@ -1,0 +1,28 @@
+Tweet retrieved and analysed, Sir. The link points to a post from @ClaudeDevs dated 12 May 2026 announcing Claude Code's /goal command — shipped in version 2.1.139. The method you're after is built around it.
+TL;DR — the "0 to full project, walk away" recipe
+The /goal command keeps a Claude Code session alive across turns until a separate evaluator model (Haiku, by default) reads the transcript and confirms your completion condition is satisfied. It then clears itself and returns control. Pair it with auto mode so tool calls aren't blocked mid-loop, and you have what the community is calling "set-and-forget."
+The minimum viable setup
+
+Enable auto mode — non-negotiable for unattended runs. Without it, the first permission prompt halts everything.
+Write a condition with four parts: end state + verification + constraints + turn cap.
+Type /goal <your condition>. The first turn fires immediately; no separate prompt needed.
+Walk away. Check progress later with /goal (no args) for turns, tokens, and the last evaluator reason. Abort with /goal clear or Ctrl+C.
+
+Example for a greenfield project:
+
+/goal Build a working Next.js + Postgres todo app in ./app:
+all routes return 200 in `npm test`, `npm run build` exits 0, 
+README documents setup. Do not modify files outside ./app. 
+Do not ask for confirmation; record uncertainties as TODO comments 
+and proceed with your highest-confidence assumption. 
+Stop after 60 turns.
+
+Headless variant (for cron, CI, or simply closing your laptop):
+
+claude -p "/goal <condition>"
+
+CAVIATS: 
+The evaluator only judges what Claude surfaces in the transcript. If verification isn't visible (e.g. test output not printed), it cannot confirm completion and the loop drifts.
+Vague conditions ("make it good") yield one of two failure modes: infinite looping or a hallucinated success. Be measurable.
+One early adopter reported the agent halting within the hour to request approval despite auto mode. Explicitly forbid clarifying questions in the condition itself.
+
