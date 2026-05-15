@@ -1,0 +1,11 @@
+# Classic 8-bit — NES-adjacent primaries plus black/white
+A 000000
+B FFFFFF
+C E40058
+D FF7777
+E 00A800
+F 50FF50
+G 0000FC
+H 5070FF
+I FCFC00
+J FFE4A0

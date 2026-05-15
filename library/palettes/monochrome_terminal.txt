@@ -1,0 +1,8 @@
+# Monochrome green-on-black terminal
+A 000000
+B 003B00
+C 007700
+D 00BB00
+E 33FF33
+F 88FF88
+G CCFFCC

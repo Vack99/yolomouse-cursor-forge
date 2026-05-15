@@ -1,0 +1,8 @@
+# Neon synthwave — magenta/cyan/yellow on dark
+A 0D0221
+B FF00C8
+C 00FFE5
+D FFD300
+E FF6EC7
+F 7A0BC0
+G FFFFFF
