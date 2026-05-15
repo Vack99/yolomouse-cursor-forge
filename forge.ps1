@@ -144,6 +144,16 @@ function Invoke-Build {
     foreach ($b in $bitmaps) { $b.Dispose() }
 }
 
+function Invoke-Preview {
+    param([Parameter(Mandatory)][string]$Name)
+    $buildDir = Join-Path $Script:RepoRoot "projects\$Name\build"
+    if (-not (Test-Path $buildDir)) { throw "forge preview: '$Name' has no build/. Run 'forge build $Name' first." }
+    foreach ($f in 'preview.gif','preview_strip.png') {
+        $p = Join-Path $buildDir $f
+        if (Test-Path $p) { Start-Process $p } else { Write-Warning "missing $p" }
+    }
+}
+
 function Invoke-List {
     $projectsDir = Join-Path $Script:RepoRoot 'projects'
     if (-not (Test-Path $projectsDir)) { Write-Host '(no projects yet)'; return }
@@ -163,6 +173,11 @@ function Invoke-List {
 }
 
 switch ($Verb) {
+    'preview' {
+        if (-not $Name) { throw 'forge preview: <Name> is required' }
+        Invoke-Preview -Name $Name
+        exit 0
+    }
     'build' {
         if (-not $Name) { throw 'forge build: <Name> is required' }
         Invoke-Build -Name $Name
