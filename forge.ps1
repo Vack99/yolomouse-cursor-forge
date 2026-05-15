@@ -145,11 +145,15 @@ function Invoke-Build {
 }
 
 function Invoke-Reload {
-    Get-Process -Name YoloLauncher,YoloMouse -ErrorAction SilentlyContinue | Stop-Process -Force
+    $running = Get-Process -Name YoloLauncher,YoloMouse -ErrorAction SilentlyContinue
+    foreach ($p in $running) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop }
+        catch { Write-Warning "could not stop $($p.Name) (PID $($p.Id)): $($_.Exception.Message). If YoloMouse is elevated, exit it from the tray and re-run." }
+    }
     $exe = Join-Path $Script:YoloMouseRoot 'YoloLauncher.exe'
     if (-not (Test-Path $exe)) { throw "forge reload: $exe not found" }
     Start-Process -FilePath $exe
-    Write-Host "Restarted YoloLauncher." -ForegroundColor Green
+    Write-Host "Started YoloLauncher." -ForegroundColor Green
 }
 
 function Invoke-Install {
