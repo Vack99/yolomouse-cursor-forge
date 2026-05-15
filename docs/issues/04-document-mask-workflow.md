@@ -3,7 +3,7 @@
 **Tracker:** https://github.com/Vack99/yolomouse-cursor-forge/issues/4
 **Label:** documentation
 **Type:** AFK
-**Status:** open
+**Status:** closed
 
 ## What to build
 
