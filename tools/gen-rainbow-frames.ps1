@@ -80,7 +80,8 @@ $period = $Palette.Count * $StripeWidth
 for ($f = 0; $f -lt $Frames; $f++) {
     $lines = @()
     $lines += "# size ${W}x${H}"
-    if ($hotspot) { $lines += "# hotspot $hotspot" }
+    # Windows .ani uses frame_00's hotspot for the whole animation; emit on frame 0 only.
+    if ($hotspot -and $f -eq 0) { $lines += "# hotspot $hotspot" }
     $lines += "# delay $Delay"
     for ($y = 0; $y -lt $H; $y++) {
         $rowChars = New-Object char[] $W
