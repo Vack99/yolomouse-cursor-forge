@@ -99,6 +99,22 @@ function Save-GifFile {
         }
     }
 
+    # Transparent-index property (0x5104). GDI+ auto-detects transparency from alpha-0
+    # pixels UNLESS other PropertyItems are present — once 0x5100 is set above,
+    # the GCE transparency flag silently drops off every frame. Must explicitly set
+    # 0x5104 on the first frame AND every frame passed to SaveAdd below.
+    $transparentItem = $null
+    try {
+        $transparentItem = [System.Activator]::CreateInstance([System.Drawing.Imaging.PropertyItem], $true)
+        $transparentItem.Id    = 0x5104
+        $transparentItem.Type  = 1      # BYTE
+        $transparentItem.Len   = 1
+        $transparentItem.Value = [byte[]](0)
+        try { $first.SetPropertyItem($transparentItem) } catch { }
+    } catch {
+        # Best-effort; if reflection fails the GIF will encode with opaque background
+    }
+
     # Encoder value constants
     $multiFrame = [System.Drawing.Imaging.EncoderValue]::MultiFrame
     $addFrame   = [System.Drawing.Imaging.EncoderValue]::FrameDimensionTime
@@ -113,6 +129,10 @@ function Save-GifFile {
         $first.Save($Path, $gifEncoder, $epStart)
 
         for ($i = 1; $i -lt $Bitmaps.Count; $i++) {
+            # Each frame's GCE needs its own transparency flag — set 0x5104 per-frame
+            if ($null -ne $transparentItem) {
+                try { $Bitmaps[$i].SetPropertyItem($transparentItem) } catch { }
+            }
             $epNext = New-Object System.Drawing.Imaging.EncoderParameters 1
             $epNext.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter(
                 [System.Drawing.Imaging.Encoder]::SaveFlag, [long]$addFrame)
