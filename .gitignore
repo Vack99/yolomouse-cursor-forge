@@ -1,0 +1,16 @@
+# Build outputs (per project)
+projects/*/build/
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor noise
+*.swp
+*~
+.vs/
+.vscode/
+
+# PowerShell transcript noise
+*.transcript
