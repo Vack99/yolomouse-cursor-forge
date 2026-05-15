@@ -144,6 +144,14 @@ function Invoke-Build {
     foreach ($b in $bitmaps) { $b.Dispose() }
 }
 
+function Invoke-Reload {
+    Get-Process -Name YoloLauncher,YoloMouse -ErrorAction SilentlyContinue | Stop-Process -Force
+    $exe = Join-Path $Script:YoloMouseRoot 'YoloLauncher.exe'
+    if (-not (Test-Path $exe)) { throw "forge reload: $exe not found" }
+    Start-Process -FilePath $exe
+    Write-Host "Restarted YoloLauncher." -ForegroundColor Green
+}
+
 function Invoke-Install {
     param([Parameter(Mandatory)][string]$Name)
     if (-not (Test-Path $Script:YoloMouseRoot)) {
@@ -203,6 +211,7 @@ function Invoke-List {
 }
 
 switch ($Verb) {
+    'reload' { Invoke-Reload; exit 0 }
     'install' {
         if (-not $Name) { throw 'forge install: <Name> is required' }
         Invoke-Install -Name $Name
