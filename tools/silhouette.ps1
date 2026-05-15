@@ -1,26 +1,43 @@
-# Pixel-sample a black-on-white image into an ASCII silhouette.
-# Crops to the largest connected dark region (the cursor itself), so screenshot
-# borders, watermarks, or other small dark artifacts don't inflate the bbox.
-# Usage: .\tools\silhouette.ps1 <image> [-Cols 32] [-Threshold 128]
+# Pixel-sample an image into an ASCII silhouette.
+# Crops to the largest connected filled region (the cursor itself), so screenshot
+# borders, watermarks, or other small artifacts don't inflate the bbox.
+#
+# Two fill modes:
+#   dark  (default) - a pixel is filled if its luminance is below -Threshold.
+#                     Use for black-on-white screenshots.
+#   alpha           - a pixel is filled if its alpha is above -Threshold.
+#                     Use for cursor/icon PNGs with a transparent background.
+#
+# Usage: .\tools\silhouette.ps1 <image> [-Cols 32] [-Mode dark|alpha] [-Threshold N]
 param(
     [Parameter(Mandatory=$true)][string]$ImagePath,
     [int]$Cols = 32,
-    [int]$Threshold = 128
+    [ValidateSet('dark','alpha')][string]$Mode = 'dark',
+    [int]$Threshold = -1
 )
 
 Add-Type -AssemblyName System.Drawing
+
+# Mode-appropriate default threshold if the caller didn't set one.
+if ($Threshold -lt 0) {
+    $Threshold = if ($Mode -eq 'alpha') { 16 } else { 128 }
+}
 
 $bmp = [System.Drawing.Bitmap]::FromFile((Resolve-Path $ImagePath))
 $srcW = $bmp.Width
 $srcH = $bmp.Height
 
-# Read all pixels into a dark/light grid in one pass.
+# Read all pixels into a filled/empty grid in one pass.
 $dark = New-Object 'bool[,]' $srcH, $srcW
 for ($y = 0; $y -lt $srcH; $y++) {
     for ($x = 0; $x -lt $srcW; $x++) {
         $px = $bmp.GetPixel($x, $y)
-        $lum = ($px.R + $px.G + $px.B) / 3
-        $dark[$y, $x] = ($lum -lt $Threshold)
+        if ($Mode -eq 'alpha') {
+            $dark[$y, $x] = ($px.A -gt $Threshold)
+        } else {
+            $lum = ($px.R + $px.G + $px.B) / 3
+            $dark[$y, $x] = ($lum -lt $Threshold)
+        }
     }
 }
 $bmp.Dispose()
@@ -75,7 +92,7 @@ $bbW = $bestMaxX - $bestMinX + 1
 $bbH = $bestMaxY - $bestMinY + 1
 Write-Output "# source: $ImagePath"
 Write-Output "# source size: ${srcW}x${srcH}"
-Write-Output "# largest dark component: ${bbW}x${bbH} at ($bestMinX,$bestMinY), $bestSize px"
+Write-Output "# largest filled component ($Mode mode): ${bbW}x${bbH} at ($bestMinX,$bestMinY), $bestSize px"
 Write-Output "# downsampled to $Cols cols (rows scaled to preserve aspect)"
 
 # Scale rows so output preserves bbox aspect ratio (square pixels).
