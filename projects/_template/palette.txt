@@ -1,0 +1,4 @@
+# Letter -> hex (RRGGBB or RRGGBBAA)
+# A FF6B6B
+# B FF4757
+# C FFA502
