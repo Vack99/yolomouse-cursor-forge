@@ -38,3 +38,45 @@ Test-Case 'Read-Palette rejects bad hex length' {
 Test-Case 'Read-Palette rejects multi-char letter' {
     Assert-Throws { Read-Palette -Text "AB FF0000" } 'single character'
 }
+
+Test-Case 'Read-Grid parses size + body' {
+    $body = @"
+# size 4x3
+....
+.AA.
+....
+"@
+    $g = Read-Grid -Text $body
+    Assert-Equal 4 $g.Width
+    Assert-Equal 3 $g.Height
+    Assert-Equal 3 $g.Cells.Count
+    Assert-Equal '.AA.' $g.Cells[1]
+    Assert-Equal $null $g.Hotspot 'no hotspot declared'
+    Assert-Equal $null $g.Delay 'no delay declared'
+}
+
+Test-Case 'Read-Grid parses hotspot and delay headers' {
+    $body = @"
+# size 2x2
+# hotspot 1,0
+# delay 12
+AB
+CD
+"@
+    $g = Read-Grid -Text $body
+    Assert-Equal 1 $g.Hotspot.X
+    Assert-Equal 0 $g.Hotspot.Y
+    Assert-Equal 12 $g.Delay
+}
+
+Test-Case 'Read-Grid rejects wrong row count' {
+    Assert-Throws {
+        Read-Grid -Text "# size 2x3`n..`n.."
+    } 'rows'
+}
+
+Test-Case 'Read-Grid rejects wrong column count' {
+    Assert-Throws {
+        Read-Grid -Text "# size 3x2`n..`n..."
+    } 'columns'
+}

@@ -37,3 +37,54 @@ function Read-Palette {
     }
     return $palette
 }
+
+function Read-Grid {
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(Mandatory, ParameterSetName='Path')][string]$Path,
+        [Parameter(Mandatory, ParameterSetName='Text')][string]$Text
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        if (-not (Test-Path $Path)) { throw "grid file not found: $Path" }
+        $Text = Get-Content -Raw -Path $Path
+    }
+    $width = $null; $height = $null; $hotspot = $null; $delay = $null
+    $cells = New-Object System.Collections.ArrayList
+    $inBody = $false
+    foreach ($line in $Text -split "`r?`n") {
+        if (-not $inBody) {
+            $t = $line.Trim()
+            if ($t -eq '') { continue }
+            if ($t.StartsWith('#')) {
+                if ($t -match '^#\s*size\s+(\d+)\s*x\s*(\d+)') {
+                    $width  = [int]$Matches[1]
+                    $height = [int]$Matches[2]
+                } elseif ($t -match '^#\s*hotspot\s+(\d+)\s*,\s*(\d+)') {
+                    $hotspot = @{ X = [int]$Matches[1]; Y = [int]$Matches[2] }
+                } elseif ($t -match '^#\s*delay\s+(\d+)') {
+                    $delay = [int]$Matches[1]
+                }
+                continue
+            }
+            $inBody = $true
+        }
+        if ($inBody) {
+            if ($line -eq '') { continue }   # tolerate trailing blank line
+            [void]$cells.Add($line)
+        }
+    }
+    if ($null -eq $width -or $null -eq $height) { throw "missing '# size WxH' header" }
+    if ($cells.Count -ne $height) { throw "expected $height rows, got $($cells.Count)" }
+    for ($i = 0; $i -lt $cells.Count; $i++) {
+        if ($cells[$i].Length -ne $width) {
+            throw "row $i has $($cells[$i].Length) columns, expected $width"
+        }
+    }
+    return @{
+        Width   = $width
+        Height  = $height
+        Hotspot = $hotspot
+        Delay   = $delay
+        Cells   = @($cells)
+    }
+}
