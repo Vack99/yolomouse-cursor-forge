@@ -87,7 +87,26 @@ function Invoke-New {
     Write-Host "Created projects\$Name with $Frames frames at ${Size}x${Size}." -ForegroundColor Green
 }
 
+function Invoke-List {
+    $projectsDir = Join-Path $Script:RepoRoot 'projects'
+    if (-not (Test-Path $projectsDir)) { Write-Host '(no projects yet)'; return }
+    $rows = @()
+    Get-ChildItem $projectsDir -Directory | Where-Object { $_.Name -ne '_template' } | ForEach-Object {
+        $frameCount = (Get-ChildItem (Join-Path $_.FullName 'frames') -Filter '*.grid.txt' -ErrorAction SilentlyContinue).Count
+        $built = Test-Path (Join-Path $_.FullName "build\$($_.Name).ani")
+        $installed = Test-Path (Join-Path $Script:YoloMouseRoot "Cursors\$($_.Name)")
+        $rows += [pscustomobject]@{
+            Name      = $_.Name
+            Frames    = $frameCount
+            Built     = if ($built) { 'yes' } else { 'no' }
+            Installed = if ($installed) { 'yes' } else { 'no' }
+        }
+    }
+    $rows | Format-Table -AutoSize | Out-Host
+}
+
 switch ($Verb) {
+    'list' { Invoke-List; exit 0 }
     'new' {
         $f = if ($PSBoundParameters.ContainsKey('Frames')) { $Frames } else { 8 }
         $s = if ($PSBoundParameters.ContainsKey('Size'))   { $Size }   else { 64 }

@@ -49,3 +49,21 @@ Test-Case 'forge new with -Frames 12 generates 12 grid files' {
         } finally { Pop-Location }
     } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
 }
+
+Test-Case 'forge list shows project names and status columns' {
+    $tmpRepo = New-TempDir
+    try {
+        Copy-Item -Recurse "$PSScriptRoot\..\projects\_template" (Join-Path $tmpRepo 'projects\_template')
+        Copy-Item -Recurse "$PSScriptRoot\..\lib" (Join-Path $tmpRepo 'lib')
+        Copy-Item "$PSScriptRoot\..\forge.ps1" (Join-Path $tmpRepo 'forge.ps1')
+        Push-Location $tmpRepo
+        try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 new Alpha | Out-Null
+            & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 new Beta -Frames 12 | Out-Null
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 list 2>&1 | Out-String
+            Assert-True ($out -match 'Alpha') 'lists Alpha'
+            Assert-True ($out -match 'Beta')  'lists Beta'
+            Assert-True ($out -match '12')    'shows frame count'
+        } finally { Pop-Location }
+    } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
+}
