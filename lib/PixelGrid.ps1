@@ -127,26 +127,149 @@ function Read-DesignFrontMatter {
     return $result
 }
 
+function ConvertFrom-RgbaHex {
+    # Shared hex -> Color helper. Accepts RRGGBB (alpha defaults to FF) or RRGGBBAA.
+    param([Parameter(Mandatory)][string]$Hex, [string]$Context = 'rgba')
+    $h = $Hex.Trim()
+    if ($h.Length -ne 6 -and $h.Length -ne 8) { throw "${Context}: hex must be 6 or 8 chars, got '$h' ($($h.Length))" }
+    if ($h -notmatch '^[0-9A-Fa-f]+$')        { throw "${Context}: hex contains non-hex chars: '$h'" }
+    $r = [Convert]::ToInt32($h.Substring(0,2),16)
+    $g = [Convert]::ToInt32($h.Substring(2,2),16)
+    $b = [Convert]::ToInt32($h.Substring(4,2),16)
+    $a = if ($h.Length -eq 8) { [Convert]::ToInt32($h.Substring(6,2),16) } else { 0xFF }
+    return [System.Drawing.Color]::FromArgb($a, $r, $g, $b)
+}
+
+function Read-JsonFrame {
+    # Parses a JSON pixel grid (Cursor Studio's frame format) into the same
+    # hashtable shape Read-Grid returns, except cells are a 2D int array
+    # under .Pixels (vs a 1D string array under .Cells). Get-FrameBitmap
+    # dispatches on whichever is present.
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(Mandatory, ParameterSetName='Path')][string]$Path,
+        [Parameter(Mandatory, ParameterSetName='Text')][string]$Text
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        if (-not (Test-Path $Path)) { throw "json frame file not found: $Path" }
+        $Text = Get-Content -Raw -Path $Path
+    }
+    try { $obj = $Text | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "json frame: invalid JSON ($($_.Exception.Message))" }
+
+    if ($null -eq $obj.width -or $null -eq $obj.height) {
+        throw "json frame: missing 'width' and/or 'height'"
+    }
+    $width  = [int]$obj.width
+    $height = [int]$obj.height
+    if ($width -le 0 -or $height -le 0) { throw "json frame: width and height must be positive (got ${width}x${height})" }
+
+    if ($obj.hotspot) {
+        $hotspot = @{ X = [int]$obj.hotspot.x; Y = [int]$obj.hotspot.y }
+    } else {
+        $hotspot = @{ X = [int]([math]::Floor($width / 2)); Y = [int]([math]::Floor($height / 2)) }
+    }
+    $delay = if ($null -ne $obj.delay) { [int]$obj.delay } else { $null }
+
+    if ($null -eq $obj.pixels) { throw "json frame: missing 'pixels' 2D array" }
+    $rows = @($obj.pixels)
+    if ($rows.Count -ne $height) { throw "json frame: expected $height rows, got $($rows.Count)" }
+    $pixels = New-Object 'System.Collections.ArrayList'
+    for ($y = 0; $y -lt $height; $y++) {
+        $row = @($rows[$y])
+        if ($row.Count -ne $width) { throw "json frame row ${y}: $($row.Count) columns, expected $width" }
+        $ints = New-Object 'int[]' $width
+        for ($x = 0; $x -lt $width; $x++) {
+            $v = $row[$x]
+            if ($v -isnot [int] -and $v -isnot [long] -and $v -isnot [double]) {
+                throw "json frame row $y col ${x}: expected integer palette index, got '$v'"
+            }
+            $iv = [int]$v
+            if ($iv -lt 0) { throw "json frame row $y col ${x}: palette index must be non-negative (got $iv)" }
+            $ints[$x] = $iv
+        }
+        [void]$pixels.Add($ints)
+    }
+
+    return @{
+        Width   = $width
+        Height  = $height
+        Hotspot = $hotspot
+        Delay   = $delay
+        Pixels  = @($pixels)
+    }
+}
+
+function Read-PaletteJson {
+    # Parses palette.json (Cursor Studio palette format) into a hashtable
+    # keyed by integer palette index -> System.Drawing.Color. The int-keyed
+    # shape is what Get-FrameBitmap consults when a grid has .Pixels.
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(Mandatory, ParameterSetName='Path')][string]$Path,
+        [Parameter(Mandatory, ParameterSetName='Text')][string]$Text
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        if (-not (Test-Path $Path)) { throw "palette.json not found: $Path" }
+        $Text = Get-Content -Raw -Path $Path
+    }
+    try { $obj = $Text | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "palette.json: invalid JSON ($($_.Exception.Message))" }
+    if ($null -eq $obj.colors) { throw "palette.json: missing 'colors' array" }
+
+    $palette = @{}
+    foreach ($entry in @($obj.colors)) {
+        if ($null -eq $entry.index) { throw "palette.json: entry missing 'index'" }
+        if ($null -eq $entry.rgba)  { throw "palette.json: entry missing 'rgba'" }
+        $idx = [int]$entry.index
+        if ($idx -lt 0) { throw "palette.json: index must be non-negative (got $idx)" }
+        $palette[$idx] = ConvertFrom-RgbaHex -Hex ([string]$entry.rgba) -Context "palette.json index $idx"
+    }
+    return $palette
+}
+
 function Get-FrameBitmap {
+    # Renders either a grid.txt-shaped grid (.Cells: string rows + char->Color
+    # palette) or a JSON-shaped grid (.Pixels: int[][] + int->Color palette).
     param(
         [Parameter(Mandatory)]$Grid,
         [Parameter(Mandatory)][hashtable]$Palette
     )
     $bmp = New-Object System.Drawing.Bitmap $Grid.Width, $Grid.Height, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $transparent = [System.Drawing.Color]::FromArgb(0,0,0,0)
-    for ($y = 0; $y -lt $Grid.Height; $y++) {
-        $row = $Grid.Cells[$y]
-        for ($x = 0; $x -lt $Grid.Width; $x++) {
-            $ch = $row[$x]
-            if ($ch -eq '.') {
-                $bmp.SetPixel($x, $y, $transparent)
-            } else {
-                $key = [string]$ch
-                if (-not $Palette.ContainsKey($key)) {
+    if ($null -ne $Grid.Pixels) {
+        # JSON path: integer palette indices. Index 0 is reserved for transparent
+        # (matches studio/src/lib/pixelGrid.ts) and does not require a palette entry.
+        for ($y = 0; $y -lt $Grid.Height; $y++) {
+            $row = $Grid.Pixels[$y]
+            for ($x = 0; $x -lt $Grid.Width; $x++) {
+                $idx = [int]$row[$x]
+                if ($idx -eq 0) {
+                    $bmp.SetPixel($x, $y, $transparent)
+                } elseif (-not $Palette.ContainsKey($idx)) {
                     $bmp.Dispose()
-                    throw "row $y col ${x}: character '$key' not in palette"
+                    throw "row $y col ${x}: palette index '$idx' not in palette"
+                } else {
+                    $bmp.SetPixel($x, $y, $Palette[$idx])
                 }
-                $bmp.SetPixel($x, $y, $Palette[$key])
+            }
+        }
+    } else {
+        # grid.txt path: char-keyed palette, '.' is transparent.
+        for ($y = 0; $y -lt $Grid.Height; $y++) {
+            $row = $Grid.Cells[$y]
+            for ($x = 0; $x -lt $Grid.Width; $x++) {
+                $ch = $row[$x]
+                if ($ch -eq '.') {
+                    $bmp.SetPixel($x, $y, $transparent)
+                } else {
+                    $key = [string]$ch
+                    if (-not $Palette.ContainsKey($key)) {
+                        $bmp.Dispose()
+                        throw "row $y col ${x}: character '$key' not in palette"
+                    }
+                    $bmp.SetPixel($x, $y, $Palette[$key])
+                }
             }
         }
     }
