@@ -36,6 +36,7 @@ Usage: .\forge.ps1 <verb> [args]
   new      <Name> [-Frames 8|12|24] [-Size 64]   Scaffold a new project from _template
   build    <Name>                                Compile grids -> .ani + previews
   canvas   <Name> [-Port 5174] [-NoBrowser]      Launch Cursor Studio in the browser
+  canvas-select <Name> [-Port 5174]              Switch a running Cursor Studio to <Name>
   preview  <Name>                                Open preview.gif and preview_strip.png
   install  <Name>                                Copy bundle into YoloMouse\Cursors\<Name>
   uninstall <Name> [-Force]                      Remove bundle from YoloMouse
@@ -315,6 +316,26 @@ function Invoke-Canvas {
     & $npm.Source --prefix $studioDir exec -- tsx $mainTs --project $Name --repo-root $repoRootArg --port $Port --dist $distDir
 }
 
+function Invoke-CanvasSelect {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [int]$Port = 5174
+    )
+    # Hits the running studio server's POST /api/active-project endpoint so
+    # Claude can switch the canvas's project from the terminal without
+    # restarting it. Fails loudly if the server is not running.
+    $projDir = Join-Path $Script:RepoRoot "projects\$Name"
+    if (-not (Test-Path $projDir)) { throw "forge canvas-select: project '$Name' not found at $projDir" }
+    $body = (@{ name = $Name } | ConvertTo-Json -Compress)
+    $uri  = "http://127.0.0.1:$Port/api/active-project"
+    try {
+        $resp = Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body $body
+    } catch {
+        throw "forge canvas-select: could not reach studio at $uri - is 'forge canvas' running? ($($_.Exception.Message))"
+    }
+    Write-Host "studio: active project is now '$($resp.name)'" -ForegroundColor Green
+}
+
 switch ($Verb) {
     'reload' { Invoke-Reload; exit 0 }
     'install' {
@@ -342,6 +363,12 @@ switch ($Verb) {
         if (-not $Name) { throw 'forge canvas: <Name> is required' }
         $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
         Invoke-Canvas -Name $Name -Port $p -NoBrowser:$NoBrowser
+        exit 0
+    }
+    'canvas-select' {
+        if (-not $Name) { throw 'forge canvas-select: <Name> is required' }
+        $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
+        Invoke-CanvasSelect -Name $Name -Port $p
         exit 0
     }
     'new' {
