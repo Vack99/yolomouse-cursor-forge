@@ -12,6 +12,8 @@ param(
     [Parameter(Position=1)][string]$Name,
     [int]$Frames,
     [int]$Size,
+    [int]$Port,
+    [switch]$NoBrowser,
     [switch]$Force
 )
 
@@ -33,6 +35,7 @@ Usage: .\forge.ps1 <verb> [args]
 
   new      <Name> [-Frames 8|12|24] [-Size 64]   Scaffold a new project from _template
   build    <Name>                                Compile grids -> .ani + previews
+  canvas   <Name> [-Port 5174] [-NoBrowser]      Launch Cursor Studio in the browser
   preview  <Name>                                Open preview.gif and preview_strip.png
   install  <Name>                                Copy bundle into YoloMouse\Cursors\<Name>
   uninstall <Name> [-Force]                      Remove bundle from YoloMouse
@@ -238,6 +241,55 @@ function Invoke-List {
     $rows | Format-Table -AutoSize | Out-Host
 }
 
+function Invoke-Canvas {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [int]$Port = 5174,
+        [switch]$NoBrowser
+    )
+    $projDir = Join-Path $Script:RepoRoot "projects\$Name"
+    if (-not (Test-Path $projDir)) { throw "forge canvas: project '$Name' not found at $projDir" }
+    $studioDir = Join-Path $Script:RepoRoot 'studio'
+    if (-not (Test-Path $studioDir)) { throw "forge canvas: studio/ not found at $studioDir" }
+
+    $node = (Get-Command node -ErrorAction SilentlyContinue)
+    if (-not $node) { throw "forge canvas: 'node' not found on PATH. Install Node.js 20+." }
+    $npm = (Get-Command npm -ErrorAction SilentlyContinue)
+    if (-not $npm) { throw "forge canvas: 'npm' not found on PATH." }
+
+    $nodeModules = Join-Path $studioDir 'node_modules'
+    if (-not (Test-Path $nodeModules)) {
+        Write-Host "studio: installing npm dependencies (one-time)…" -ForegroundColor Cyan
+        & $npm.Source --prefix $studioDir install --no-fund --no-audit
+        if ($LASTEXITCODE -ne 0) { throw "forge canvas: npm install failed (exit $LASTEXITCODE)" }
+    }
+    $distDir = Join-Path $studioDir 'dist'
+    if (-not (Test-Path (Join-Path $distDir 'index.html'))) {
+        Write-Host "studio: building frontend bundle…" -ForegroundColor Cyan
+        & $npm.Source --prefix $studioDir run build
+        if ($LASTEXITCODE -ne 0) { throw "forge canvas: frontend build failed (exit $LASTEXITCODE)" }
+    }
+
+    $url = "http://127.0.0.1:$Port/"
+    if (-not $NoBrowser) {
+        # Open the browser slightly after the server starts so the page loads
+        # immediately rather than landing on a connection-refused error.
+        Start-Job -ScriptBlock {
+            param($u)
+            Start-Sleep -Milliseconds 900
+            Start-Process $u
+        } -ArgumentList $url | Out-Null
+    }
+
+    Write-Host "studio: launching for project '$Name' at $url (Ctrl+C to stop)" -ForegroundColor Green
+    # Hand off to tsx via npx. This call blocks until the user Ctrl+Cs.
+    # Bind to locals so values interpolate cleanly before npm.ps1's
+    # Invoke-Expression layer sees them.
+    $repoRootArg = $Script:RepoRoot
+    $mainTs      = Join-Path $studioDir 'src\server\main.ts'
+    & $npm.Source --prefix $studioDir exec -- tsx $mainTs --project $Name --repo-root $repoRootArg --port $Port --dist $distDir
+}
+
 switch ($Verb) {
     'reload' { Invoke-Reload; exit 0 }
     'install' {
@@ -261,6 +313,12 @@ switch ($Verb) {
         exit 0
     }
     'list' { Invoke-List; exit 0 }
+    'canvas' {
+        if (-not $Name) { throw 'forge canvas: <Name> is required' }
+        $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
+        Invoke-Canvas -Name $Name -Port $p -NoBrowser:$NoBrowser
+        exit 0
+    }
     'new' {
         $f = if ($PSBoundParameters.ContainsKey('Frames')) { $Frames } else { 8 }
         $s = if ($PSBoundParameters.ContainsKey('Size'))   { $Size }   else { 64 }

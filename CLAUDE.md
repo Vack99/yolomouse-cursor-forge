@@ -40,11 +40,32 @@ A workshop where Aaron + Claude collaboratively design custom **animated cursors
 |---|---|---|
 | `new` | `<Name> [-Frames 8\|12\|24] [-Size 64]` | Scaffold from `projects\_template\`. Default 8 frames at 64×64. |
 | `build` | `<Name>` | Compile grids → `.ani` + bundle + previews in `build\`. |
+| `canvas` | `<Name> [-Port 5174] [-NoBrowser]` | Launch Cursor Studio (localhost browser canvas) for the project. |
 | `preview` | `<Name>` | Open `build\preview.gif` and `build\preview_strip.png`. |
 | `install` | `<Name>` | Copy `build\` contents into YoloMouse `Cursors\<Name>\`. |
 | `uninstall` | `<Name>` | Remove `<Name>` from YoloMouse Cursors. |
 | `reload` | (none) | Kill + relaunch `YoloLauncher.exe`. |
 | `list` | (none) | Show all projects + build/install status. |
+
+## Cursor Studio (`studio/`)
+
+`forge canvas <Name>` launches **Cursor Studio**, a localhost browser canvas
+that will become the shared visual design surface (see PRD `#5`). At the
+current S1 stage it renders one hand-authored JSON pixel grid from
+`projects/<Name>/frames/frame_00.json` against `projects/<Name>/palette.json`,
+with a pixel-grid overlay and hotspot crosshair. Live editing, candidate
+galleries, tweening, and `.ani` integration arrive in later issues.
+
+- Stack: Vite + React + TypeScript frontend, Node HTTP server via `tsx`,
+  Vitest for the deep-module tests. The "no installs" rule from earlier in
+  this file is intentionally retired for the `studio/` subtree — the PRD
+  documents the tradeoff.
+- JSON pixel-grid schema lives in `studio/src/lib/pixelGrid.ts` (and its
+  doc comment): `{ version: 1, width, height, hotspot: {x,y}, pixels: int[][] }`.
+  Index 0 is transparent; positive ints index `palette.json`.
+- Reference project: `projects/TracerDot/` — a 16×16 arrow committed as the
+  tracer fixture; opening `forge canvas TracerDot` is the smoke test for the
+  whole stack.
 
 ## Authoring paths
 
