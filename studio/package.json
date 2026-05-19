@@ -6,6 +6,7 @@
   "description": "Cursor Studio — localhost design surface for YoloMouse cursors. See docs/specs/2026-05-14-cursor-forge-design.md and issue #5.",
   "scripts": {
     "dev:server": "tsx src/server/main.ts",
+    "gen-frame": "tsx src/cli/generateFrame.ts",
     "build": "vite build",
     "test": "vitest run"
   },
