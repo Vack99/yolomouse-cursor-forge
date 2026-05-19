@@ -8,11 +8,14 @@
 
 import { useEffect, useRef } from 'react';
 
-export type ReloadKind = 'frame' | 'palette';
+export type ReloadKind = 'frame' | 'palette' | 'project';
 
 export interface ReloadEventPayload {
   kind: ReloadKind;
+  /** Present when kind === 'frame'. */
   fileName?: string;
+  /** Present when kind === 'project'. */
+  name?: string;
 }
 
 interface ServerMessage {

@@ -55,6 +55,35 @@ body {
   font-weight: 500;
 }
 
+.studio__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.studio__picker-label {
+  color: var(--fg-dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.studio__picker-select {
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  border: 1px solid var(--grid-line-strong);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+}
+
+.studio__picker-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .studio__meta {
   color: var(--fg-dim);
   font-size: 0.8rem;
