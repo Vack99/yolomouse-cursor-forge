@@ -94,17 +94,27 @@ function Invoke-Build {
     param([Parameter(Mandatory)][string]$Name)
     $projDir = Join-Path $Script:RepoRoot "projects\$Name"
     if (-not (Test-Path $projDir)) { throw "forge build: project '$Name' not found at $projDir" }
-    $designPath  = Join-Path $projDir 'design.md'
-    $palettePath = Join-Path $projDir 'palette.txt'
-    $framesDir   = Join-Path $projDir 'frames'
-    $buildDir    = Join-Path $projDir 'build'
-    foreach ($p in $designPath, $palettePath) {
-        if (-not (Test-Path $p)) { throw "forge build: missing $p" }
+    $designPath     = Join-Path $projDir 'design.md'
+    $paletteTxtPath = Join-Path $projDir 'palette.txt'
+    $paletteJsonPath= Join-Path $projDir 'palette.json'
+    $framesDir      = Join-Path $projDir 'frames'
+    $buildDir       = Join-Path $projDir 'build'
+    if (-not (Test-Path $designPath)) { throw "forge build: missing $designPath" }
+    $design = Read-DesignFrontMatter -Path $designPath
+
+    $pngFiles  = @(Get-ChildItem $framesDir -Filter 'frame_*.png'      -ErrorAction SilentlyContinue | Sort-Object Name)
+    $gridFiles = @(Get-ChildItem $framesDir -Filter '*.grid.txt'       -ErrorAction SilentlyContinue | Sort-Object Name)
+    $jsonFiles = @(Get-ChildItem $framesDir -Filter 'frame_*.json'     -ErrorAction SilentlyContinue | Sort-Object Name)
+
+    # Each project authors in exactly one format. Mixing is ambiguous (e.g. which
+    # frame_00 wins?) so fail fast instead of guessing.
+    $modes = @()
+    if ($pngFiles.Count  -gt 0) { $modes += 'PNG' }
+    if ($gridFiles.Count -gt 0) { $modes += 'grid.txt' }
+    if ($jsonFiles.Count -gt 0) { $modes += 'JSON' }
+    if ($modes.Count -gt 1) {
+        throw "forge build: $framesDir contains mixed frame formats ($($modes -join ', ')). Use one."
     }
-    $design  = Read-DesignFrontMatter -Path $designPath
-    $palette = Read-Palette -Path $palettePath
-    $pngFiles  = @(Get-ChildItem $framesDir -Filter 'frame_*.png' | Sort-Object Name)
-    $gridFiles = @(Get-ChildItem $framesDir -Filter '*.grid.txt' | Sort-Object Name)
 
     $bitmaps = @()
     $delays  = @()
@@ -125,28 +135,40 @@ function Invoke-Build {
             $loaded.Dispose()
             $delays  += $design.DefaultDelay
         }
-    } elseif ($gridFiles.Count -gt 0) {
+    } elseif ($gridFiles.Count -gt 0 -or $jsonFiles.Count -gt 0) {
+        # Pick the parser + palette pair for whichever authoring format is present.
+        if ($jsonFiles.Count -gt 0) {
+            if (-not (Test-Path $paletteJsonPath)) { throw "forge build: missing $paletteJsonPath" }
+            $frameFiles = $jsonFiles
+            $readFrame  = Get-Command Read-JsonFrame
+            $palette    = Read-PaletteJson -Path $paletteJsonPath
+        } else {
+            if (-not (Test-Path $paletteTxtPath)) { throw "forge build: missing $paletteTxtPath" }
+            $frameFiles = $gridFiles
+            $readFrame  = Get-Command Read-Grid
+            $palette    = Read-Palette -Path $paletteTxtPath
+        }
         $firstHotspotOverride = $null
-        for ($i = 0; $i -lt $gridFiles.Count; $i++) {
-            $g = Read-Grid -Path $gridFiles[$i].FullName
+        for ($i = 0; $i -lt $frameFiles.Count; $i++) {
+            $g = & $readFrame -Path $frameFiles[$i].FullName
             if ($g.Width -ne $design.Width -or $g.Height -ne $design.Height) {
-                throw "$($gridFiles[$i].Name): size $($g.Width)x$($g.Height) != project size $($design.Width)x$($design.Height)"
+                throw "$($frameFiles[$i].Name): size $($g.Width)x$($g.Height) != project size $($design.Width)x$($design.Height)"
             }
             try {
                 $bmp = Get-FrameBitmap -Grid $g -Palette $palette
             } catch {
-                throw "$($gridFiles[$i].Name): $($_.Exception.Message)"
+                throw "$($frameFiles[$i].Name): $($_.Exception.Message)"
             }
             $bitmaps += $bmp
             $delays  += if ($g.Delay) { $g.Delay } else { $design.DefaultDelay }
             if ($i -eq 0 -and $g.Hotspot) { $firstHotspotOverride = $g.Hotspot }
             if ($i -gt 0 -and $g.Hotspot) {
-                Write-Warning "$($gridFiles[$i].Name): per-frame hotspot ignored (Windows .ani uses frame_00's hotspot for all frames)"
+                Write-Warning "$($frameFiles[$i].Name): per-frame hotspot ignored (Windows .ani uses frame_00's hotspot for all frames)"
             }
         }
         if ($firstHotspotOverride) { $hotspot = $firstHotspotOverride }
     } else {
-        throw "forge build: no frame_*.png or frame_*.grid.txt files in $framesDir"
+        throw "forge build: no frame_*.png, frame_*.json, or frame_*.grid.txt files in $framesDir"
     }
 
     if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
@@ -228,6 +250,9 @@ function Invoke-List {
         $frameCount = (Get-ChildItem $framesPath -Filter '*.grid.txt' -ErrorAction SilentlyContinue).Count
         if ($frameCount -eq 0) {
             $frameCount = (Get-ChildItem $framesPath -Filter 'frame_*.png' -ErrorAction SilentlyContinue).Count
+        }
+        if ($frameCount -eq 0) {
+            $frameCount = (Get-ChildItem $framesPath -Filter 'frame_*.json' -ErrorAction SilentlyContinue).Count
         }
         $built = Test-Path (Join-Path $_.FullName "build\$($_.Name).ani")
         $installed = Test-Path (Join-Path $Script:YoloMouseRoot "Cursors\$($_.Name)")
