@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
 import { PixelCanvas } from './PixelCanvas.js';
+import { useReloadChannel } from './useReloadChannel.js';
 
 interface PaletteEntry {
   index: number;
@@ -50,6 +51,17 @@ async function loadActiveProject(): Promise<LoadedProject> {
 export function App(): JSX.Element {
   const [state, setState] = useState<State>({ status: 'loading' });
 
+  const refresh = useCallback((): void => {
+    loadActiveProject()
+      .then((project) => setState({ status: 'ready', project }))
+      .catch((err: unknown) => {
+        setState({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     loadActiveProject()
@@ -68,6 +80,12 @@ export function App(): JSX.Element {
       cancelled = true;
     };
   }, []);
+
+  // Live filesystem sync: server pushes a `reload` frame whenever a JSON
+  // frame or palette.json on disk changes. We refetch — the server is the
+  // single source of truth (PRD: "the filesystem is the single source of
+  // truth"), so a fresh read is the right thing every time.
+  useReloadChannel({ onReload: refresh });
 
   if (state.status === 'loading') {
     return (
