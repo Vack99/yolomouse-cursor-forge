@@ -132,6 +132,8 @@ export function createApp(opts: ServerOptions): http.RequestListener {
 export interface StartedServer {
   port: number;
   url: string;
+  /** Underlying Node http.Server, exposed so callers can attach WebSockets. */
+  server: http.Server;
   close(): Promise<void>;
 }
 
@@ -150,6 +152,7 @@ export function startServer(opts: ServerOptions): Promise<StartedServer> {
       resolve({
         port,
         url: `http://${host}:${port}/`,
+        server,
         close: () =>
           new Promise<void>((resClose, rejClose) => {
             server.close((err) => (err ? rejClose(err) : resClose()));

@@ -7,6 +7,8 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { createProjectStore } from './projectStore.js';
+import { createProjectWatcher } from './projectWatcher.js';
+import { createReloadBridge } from './reloadBridge.js';
 import { startServer, moduleDir } from './httpServer.js';
 
 interface Args {
@@ -61,12 +63,21 @@ async function main(): Promise<void> {
   }
   const store = createProjectStore({ repoRoot });
   const server = await startServer({ store, projectName, distDir, port });
+
+  const projectDir = path.join(repoRoot, 'projects', projectName);
+  const watcher = createProjectWatcher({ projectDir });
+  const bridge = createReloadBridge({ server: server.server, watcher });
+
   // eslint-disable-next-line no-console
   console.log(`studio: serving project '${projectName}' at ${server.url}`);
   // eslint-disable-next-line no-console
   console.log(`studio: repo root = ${repoRoot}`);
+  // eslint-disable-next-line no-console
+  console.log(`studio: watching ${projectDir}`);
 
   const shutdown = async (): Promise<void> => {
+    bridge.close();
+    watcher.close();
     await server.close();
     process.exit(0);
   };
