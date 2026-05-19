@@ -15,7 +15,12 @@ import * as path from 'node:path';
 
 export type ReloadEvent =
   | { kind: 'frame'; fileName: string }
-  | { kind: 'palette' };
+  | { kind: 'palette' }
+  // Emitted by activeProjectSession (not by this watcher itself) when the
+  // user switches the studio to a different project. Lives in the same
+  // union so the reload bridge can broadcast every reload-shaped signal
+  // through one channel.
+  | { kind: 'project'; name: string };
 
 export type ReloadListener = (event: ReloadEvent) => void;
 
