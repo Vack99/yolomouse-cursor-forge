@@ -34,6 +34,16 @@ export interface Project {
 
 export interface ProjectStore {
   readProject(name: string): Project;
+  /**
+   * Names of every studio-format project under `projects/`, alphabetised
+   * case-insensitively. A project is "studio-format" iff its directory
+   * contains `palette.json` — that distinguishes JSON-frame projects from
+   * the legacy hand-painted `.grid.txt` / `.png` projects which the studio
+   * cannot display (see PRD: existing projects are out of scope for
+   * migration). Template directories (`_*`) and dot-directories are
+   * skipped so the picker shows only real projects.
+   */
+  listProjects(): string[];
 }
 
 export interface ProjectStoreOptions {
@@ -78,5 +88,25 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     return { name, frames, palette };
   }
 
-  return { readProject };
+  function listProjects(): string[] {
+    const projectsDir = path.join(repoRoot, 'projects');
+    if (!fs.existsSync(projectsDir) || !fs.statSync(projectsDir).isDirectory()) {
+      return [];
+    }
+    const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+    const names: string[] = [];
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const name = ent.name;
+      if (name.startsWith('_') || name.startsWith('.')) continue;
+      // Studio-format projects are identified by palette.json — the only
+      // file unique to the JSON-frame layout.
+      if (!fs.existsSync(path.join(projectsDir, name, 'palette.json'))) continue;
+      names.push(name);
+    }
+    names.sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+    return names;
+  }
+
+  return { readProject, listProjects };
 }

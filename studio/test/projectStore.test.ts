@@ -106,3 +106,59 @@ describe('projectStore', () => {
     expect(() => store.readProject('a/b')).toThrow(/invalid project name/i);
   });
 });
+
+describe('projectStore.listProjects', () => {
+  it('lists every studio project (directory containing palette.json) under projects/', () => {
+    const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+    writeProject('Alpha', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('Beta', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('Gamma', { 'palette.json': palette, 'frames/frame_00.json': blank });
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listProjects()).toEqual(['Alpha', 'Beta', 'Gamma']);
+  });
+
+  it('skips template directories (underscore prefix) and dot-directories', () => {
+    const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+    writeProject('_template', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('.hidden', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('Real', { 'palette.json': palette, 'frames/frame_00.json': blank });
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listProjects()).toEqual(['Real']);
+  });
+
+  it('skips non-studio directories that have no palette.json (legacy grid/PNG projects)', () => {
+    // Simulate a legacy hand-painted project: has frames/ but no palette.json.
+    const projDir = path.join(tmpRoot, 'projects', 'Legacy');
+    fs.mkdirSync(path.join(projDir, 'frames'), { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'frames', 'frame_00.grid.txt'), '', 'utf8');
+
+    // And a real studio project alongside it.
+    const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+    writeProject('Studio', { 'palette.json': palette, 'frames/frame_00.json': blank });
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listProjects()).toEqual(['Studio']);
+  });
+
+  it('returns names sorted alphabetically', () => {
+    const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+    writeProject('Zeta', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('alpha', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    writeProject('Mira', { 'palette.json': palette, 'frames/frame_00.json': blank });
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    // Case-insensitive sort so users don't see Capital then lowercase weirdness.
+    expect(store.listProjects()).toEqual(['alpha', 'Mira', 'Zeta']);
+  });
+
+  it('returns an empty list when no projects exist', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listProjects()).toEqual([]);
+  });
+});
