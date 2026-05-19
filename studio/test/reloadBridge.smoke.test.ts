@@ -7,6 +7,7 @@ import { createProjectStore } from '../src/server/projectStore.js';
 import { createProjectWatcher, type ProjectWatcher } from '../src/server/projectWatcher.js';
 import { startServer, type StartedServer } from '../src/server/httpServer.js';
 import { createReloadBridge, type ReloadBridge } from '../src/server/reloadBridge.js';
+import { createActiveProjectSession, type ActiveProjectSession } from '../src/server/activeProjectSession.js';
 
 // Smoke check: stand up the real server + watcher + bridge against a real
 // temp project, open a real WebSocket from the test, write to disk, and
@@ -17,6 +18,27 @@ let distDir: string;
 let server: StartedServer | undefined;
 let watcher: ProjectWatcher | undefined;
 let bridge: ReloadBridge | undefined;
+let session: ActiveProjectSession | undefined;
+
+/**
+ * The reload bridge smoke tests assert the watcher -> bridge -> WebSocket
+ * plumbing end-to-end against the real file system. They predate the
+ * activeProjectSession refactor. The server now requires a session, so we
+ * build one with a no-op watcher factory — the bridge gets the *real*
+ * watcher directly, which is the integration the smoke tests care about.
+ */
+function buildSession(initial: string): ActiveProjectSession {
+  const store = createProjectStore({ repoRoot: tmpRoot });
+  return createActiveProjectSession({
+    repoRoot: tmpRoot,
+    store,
+    initial,
+    createWatcher: () => ({
+      onChange: () => () => {},
+      close: () => {},
+    }),
+  });
+}
 
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-bridge-'));
@@ -29,6 +51,8 @@ afterEach(async () => {
   bridge = undefined;
   watcher?.close();
   watcher = undefined;
+  session?.close();
+  session = undefined;
   if (server) {
     await server.close();
     server = undefined;
@@ -94,7 +118,8 @@ describe('reload bridge (smoke)', () => {
   it('pushes a frame-reload event to a connected WebSocket client when a frame file changes', async () => {
     const projectDir = writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = buildSession('Hello');
+    server = await startServer({ store, session, distDir });
     watcher = createProjectWatcher({ projectDir, debounceMs: 30 });
     bridge = createReloadBridge({ server: server.server, watcher });
 
@@ -124,7 +149,8 @@ describe('reload bridge (smoke)', () => {
   it('pushes a palette-reload event when palette.json changes', async () => {
     const projectDir = writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = buildSession('Hello');
+    server = await startServer({ store, session, distDir });
     watcher = createProjectWatcher({ projectDir, debounceMs: 30 });
     bridge = createReloadBridge({ server: server.server, watcher });
 
@@ -150,7 +176,8 @@ describe('reload bridge (smoke)', () => {
   it('broadcasts to multiple connected clients', async () => {
     const projectDir = writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = buildSession('Hello');
+    server = await startServer({ store, session, distDir });
     watcher = createProjectWatcher({ projectDir, debounceMs: 30 });
     bridge = createReloadBridge({ server: server.server, watcher });
 

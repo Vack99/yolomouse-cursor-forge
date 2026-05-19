@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import { createProjectStore } from './projectStore.js';
 import { createProjectWatcher } from './projectWatcher.js';
 import { createReloadBridge } from './reloadBridge.js';
+import { createActiveProjectSession } from './activeProjectSession.js';
 import { startServer, moduleDir } from './httpServer.js';
 
 interface Args {
@@ -62,22 +63,28 @@ async function main(): Promise<void> {
     );
   }
   const store = createProjectStore({ repoRoot });
-  const server = await startServer({ store, projectName, distDir, port });
-
-  const projectDir = path.join(repoRoot, 'projects', projectName);
-  const watcher = createProjectWatcher({ projectDir });
-  const bridge = createReloadBridge({ server: server.server, watcher });
+  const session = createActiveProjectSession({
+    repoRoot,
+    store,
+    initial: projectName,
+    createWatcher: (projectDir) => createProjectWatcher({ projectDir }),
+  });
+  const server = await startServer({ store, session, distDir, port });
+  // The bridge subscribes to the session, not directly to a watcher — so
+  // when the active project changes the bridge keeps fanning out events
+  // from whichever watcher the session currently owns.
+  const bridge = createReloadBridge({ server: server.server, watcher: session });
 
   // eslint-disable-next-line no-console
-  console.log(`studio: serving project '${projectName}' at ${server.url}`);
+  console.log(`studio: serving project '${session.getActiveProject()}' at ${server.url}`);
   // eslint-disable-next-line no-console
   console.log(`studio: repo root = ${repoRoot}`);
   // eslint-disable-next-line no-console
-  console.log(`studio: watching ${projectDir}`);
+  console.log(`studio: known projects = ${store.listProjects().join(', ') || '(none)'}`);
 
   const shutdown = async (): Promise<void> => {
     bridge.close();
-    watcher.close();
+    session.close();
     await server.close();
     process.exit(0);
   };

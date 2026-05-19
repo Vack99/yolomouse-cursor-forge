@@ -4,7 +4,35 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createProjectStore } from '../src/server/projectStore.js';
 import { startServer, type StartedServer } from '../src/server/httpServer.js';
+import { createActiveProjectSession, type ActiveProjectSession } from '../src/server/activeProjectSession.js';
+import type { ProjectWatcher, ReloadListener } from '../src/server/projectWatcher.js';
 import { createPixelGrid, serializePixelGrid, setPixel } from '../src/lib/pixelGrid.js';
+
+// In-test fake watcher — the real one uses fs.watch, which we don't want
+// firing under the API smoke tests. The session API is what matters here.
+function nullWatcherFactory(): (projectDir: string) => ProjectWatcher {
+  return (_projectDir: string): ProjectWatcher => {
+    const listeners = new Set<ReloadListener>();
+    return {
+      onChange(l) {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      close() {
+        listeners.clear();
+      },
+    };
+  };
+}
+
+function mkSession(repoRoot: string, initial: string): ActiveProjectSession {
+  return createActiveProjectSession({
+    repoRoot,
+    store: createProjectStore({ repoRoot }),
+    initial,
+    createWatcher: nullWatcherFactory(),
+  });
+}
 
 // Smoke check: stand up the real HTTP server against a real temp project, hit
 // the API endpoint, and assert the JSON payload round-trips.
@@ -12,6 +40,7 @@ import { createPixelGrid, serializePixelGrid, setPixel } from '../src/lib/pixelG
 let tmpRoot: string;
 let distDir: string;
 let server: StartedServer | undefined;
+let session: ActiveProjectSession | undefined;
 
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-server-'));
@@ -25,6 +54,8 @@ afterEach(async () => {
     await server.close();
     server = undefined;
   }
+  session?.close();
+  session = undefined;
   fs.rmSync(tmpRoot, { recursive: true, force: true });
   fs.rmSync(distDir, { recursive: true, force: true });
 });
@@ -47,7 +78,8 @@ describe('http server (smoke)', () => {
   it('serves /api/projects/:name with the on-disk frame and palette', async () => {
     const { grid } = writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
 
     const res = await fetch(`${server.url}api/projects/Hello`);
     expect(res.status).toBe(200);
@@ -66,17 +98,20 @@ describe('http server (smoke)', () => {
   });
 
   it('returns 404 for an unknown project', async () => {
+    writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
 
     const res = await fetch(`${server.url}api/projects/Ghost`);
     expect(res.status).toBe(404);
   });
 
-  it('serves /api/active-project with the launched project name', async () => {
+  it('serves /api/active-project with the active project name', async () => {
     writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
 
     const res = await fetch(`${server.url}api/active-project`);
     expect(res.status).toBe(200);
@@ -86,10 +121,74 @@ describe('http server (smoke)', () => {
   it('falls back to index.html for unknown paths (SPA)', async () => {
     writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });
-    server = await startServer({ store, projectName: 'Hello', distDir });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
 
     const res = await fetch(`${server.url}`);
     expect(res.status).toBe(200);
     expect((await res.text()).toLowerCase()).toContain('<title>studio</title>');
+  });
+
+  it('GET /api/projects lists every studio project on disk', async () => {
+    writeProject('Hello');
+    writeProject('World');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ projects: ['Hello', 'World'] });
+  });
+
+  it('POST /api/active-project switches the session to the requested project', async () => {
+    writeProject('Hello');
+    writeProject('World');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/active-project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'World' }),
+    });
+    expect(post.status).toBe(200);
+    expect(await post.json()).toEqual({ name: 'World' });
+
+    // Now the GET endpoint reflects the switch.
+    const get = await fetch(`${server.url}api/active-project`);
+    expect(await get.json()).toEqual({ name: 'World' });
+    expect(session.getActiveProject()).toBe('World');
+  });
+
+  it('POST /api/active-project returns 404 for a project that does not exist', async () => {
+    writeProject('Hello');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/active-project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ghost' }),
+    });
+    expect(post.status).toBe(404);
+    // Active project is unchanged.
+    expect(session.getActiveProject()).toBe('Hello');
+  });
+
+  it('POST /api/active-project rejects a malformed body', async () => {
+    writeProject('Hello');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/active-project`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(post.status).toBe(400);
   });
 });

@@ -1,18 +1,18 @@
-// HTTP server — serves the built Vite bundle and one API route.
-// Glue module: exercised by the smoke test in test/server.smoke.test.ts and
-// by `forge canvas` in production. No business logic lives here; it shells
-// every request out to the project store.
+// HTTP server — serves the built Vite bundle and a handful of API routes.
+// Glue module: no business logic lives here. Project reads delegate to
+// projectStore; active-project changes delegate to activeProjectSession.
 
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ProjectStore } from './projectStore.js';
+import type { ActiveProjectSession } from './activeProjectSession.js';
 
 export interface ServerOptions {
   store: ProjectStore;
-  /** Default project served on `/`. */
-  projectName: string;
+  /** Holds the currently active project; mutated by POST /api/active-project. */
+  session: ActiveProjectSession;
   /** Directory containing the built Vite assets (index.html + assets/). */
   distDir: string;
   port?: number;
@@ -49,83 +49,138 @@ function sendStatic(res: http.ServerResponse, filePath: string): void {
   res.end(data);
 }
 
+/** Read an entire request body up to a cap; reject if oversized. */
+function readBody(req: http.IncomingMessage, maxBytes = 64 * 1024): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error(`request body exceeds ${maxBytes} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
 export function createApp(opts: ServerOptions): http.RequestListener {
-  const { store, projectName, distDir } = opts;
+  const { store, session, distDir } = opts;
 
   return (req, res) => {
-    try {
-      const url = new URL(req.url ?? '/', 'http://localhost');
-      const pathname = url.pathname;
+    void (async (): Promise<void> => {
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        const pathname = url.pathname;
 
-      // API: GET /api/projects/:name -> { project }
-      const apiMatch = /^\/api\/projects\/([^/]+)$/.exec(pathname);
-      if (apiMatch && req.method === 'GET') {
-        const requested = decodeURIComponent(apiMatch[1]!);
-        try {
-          const project = store.readProject(requested);
-          // Re-serialise PixelGrid via plain JSON; the frontend re-parses with
-          // parsePixelGrid for type-narrowed access.
-          const payload = {
-            name: project.name,
-            palette: project.palette,
-            frames: project.frames.map((f) => ({
-              fileName: f.fileName,
-              grid: {
-                version: 1 as const,
-                width: f.grid.width,
-                height: f.grid.height,
-                hotspot: f.grid.hotspot,
-                pixels: f.grid.pixels.map((row) => [...row]),
-              },
-            })),
-          };
-          sendJson(res, 200, payload);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = /not found/i.test(msg) ? 404 : 400;
-          sendError(res, status, msg);
-        }
-        return;
-      }
-
-      // API: GET /api/active-project -> { name } (so the SPA knows which
-      // project this server was launched against without hard-coding it).
-      if (pathname === '/api/active-project' && req.method === 'GET') {
-        sendJson(res, 200, { name: projectName });
-        return;
-      }
-
-      // Static: anything else falls through to the Vite-built bundle.
-      if (req.method === 'GET' || req.method === 'HEAD') {
-        const safe = pathname === '/' ? '/index.html' : pathname;
-        // Strip the leading slash so path.join treats it relative to distDir.
-        const candidate = path.normalize(path.join(distDir, safe));
-        // Make sure the resolved path stays inside distDir.
-        const rel = path.relative(distDir, candidate);
-        if (rel.startsWith('..') || path.isAbsolute(rel)) {
-          sendError(res, 400, 'invalid path');
+        // GET /api/projects -> { projects: [name, ...] }
+        if (pathname === '/api/projects' && req.method === 'GET') {
+          sendJson(res, 200, { projects: store.listProjects() });
           return;
         }
-        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-          sendStatic(res, candidate);
-          return;
-        }
-        // SPA fallback: serve index.html for unknown paths so client-side
-        // routing works if we ever add it.
-        const indexHtml = path.join(distDir, 'index.html');
-        if (fs.existsSync(indexHtml)) {
-          sendStatic(res, indexHtml);
-          return;
-        }
-        sendError(res, 404, `not found: ${pathname}`);
-        return;
-      }
 
-      sendError(res, 405, `method not allowed: ${req.method}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      sendError(res, 500, msg);
-    }
+        // GET /api/projects/:name -> { project }
+        const apiMatch = /^\/api\/projects\/([^/]+)$/.exec(pathname);
+        if (apiMatch && req.method === 'GET') {
+          const requested = decodeURIComponent(apiMatch[1]!);
+          try {
+            const project = store.readProject(requested);
+            // Re-serialise PixelGrid via plain JSON; the frontend re-parses
+            // with parsePixelGrid for type-narrowed access.
+            const payload = {
+              name: project.name,
+              palette: project.palette,
+              frames: project.frames.map((f) => ({
+                fileName: f.fileName,
+                grid: {
+                  version: 1 as const,
+                  width: f.grid.width,
+                  height: f.grid.height,
+                  hotspot: f.grid.hotspot,
+                  pixels: f.grid.pixels.map((row) => [...row]),
+                },
+              })),
+            };
+            sendJson(res, 200, payload);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // GET /api/active-project -> { name }
+        if (pathname === '/api/active-project' && req.method === 'GET') {
+          sendJson(res, 200, { name: session.getActiveProject() });
+          return;
+        }
+
+        // POST /api/active-project { name } -> { name }
+        // Used by both the in-canvas project picker and `forge` from the
+        // terminal so Claude can switch the canvas without restarting the
+        // server.
+        if (pathname === '/api/active-project' && req.method === 'POST') {
+          let body: { name?: unknown };
+          try {
+            const raw = await readBody(req);
+            body = JSON.parse(raw) as { name?: unknown };
+          } catch {
+            sendError(res, 400, 'body must be valid JSON');
+            return;
+          }
+          const name = body.name;
+          if (typeof name !== 'string' || name.length === 0) {
+            sendError(res, 400, "body must include a non-empty 'name' string");
+            return;
+          }
+          try {
+            session.setActiveProject(name);
+            sendJson(res, 200, { name: session.getActiveProject() });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // Static: anything else falls through to the Vite-built bundle.
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          const safe = pathname === '/' ? '/index.html' : pathname;
+          // Strip the leading slash so path.join treats it relative to distDir.
+          const candidate = path.normalize(path.join(distDir, safe));
+          // Make sure the resolved path stays inside distDir.
+          const rel = path.relative(distDir, candidate);
+          if (rel.startsWith('..') || path.isAbsolute(rel)) {
+            sendError(res, 400, 'invalid path');
+            return;
+          }
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            sendStatic(res, candidate);
+            return;
+          }
+          // SPA fallback: serve index.html for unknown paths so client-side
+          // routing works if we ever add it.
+          const indexHtml = path.join(distDir, 'index.html');
+          if (fs.existsSync(indexHtml)) {
+            sendStatic(res, indexHtml);
+            return;
+          }
+          sendError(res, 404, `not found: ${pathname}`);
+          return;
+        }
+
+        sendError(res, 405, `method not allowed: ${req.method}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendError(res, 500, msg);
+      }
+    })();
   };
 }
 
