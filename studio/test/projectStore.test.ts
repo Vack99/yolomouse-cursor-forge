@@ -455,3 +455,175 @@ describe('projectStore.writeCandidate', () => {
     expect(() => store.writeCandidate('CandPath', 'first', 'a/b', g)).toThrow(/candidate id/i);
   });
 });
+
+// "Generate 4 more" support — issue #14.
+//
+// allocateCandidateIds: deterministic, zero-padded sequential ids that do not
+// collide with anything already on disk. Implements the "no upper cap" + "new
+// candidates appear alongside the existing ones (none replaced)" acceptance
+// criteria without the caller having to scan candidates/<stage>/ itself.
+//
+// appendCandidates: glue of "allocate + writeCandidate × N" so the command
+// surface is one atomic call and Claude (or the canvas) cannot half-finish a
+// batch and leave gaps in the sequence.
+//
+// computeActiveStage: derives the current workflow stage from the on-disk
+// lock markers — the active stage is the first stage that has no lock.json.
+// This is the "queryable active stage" criterion: Claude reads this to know
+// where a "generate 4 more" call should land.
+
+describe('projectStore.allocateCandidateIds', () => {
+  const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+
+  it('returns sequential candidate_NN ids starting at 00 when the stage is empty', () => {
+    writeProject('Empty', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.allocateCandidateIds('Empty', 'first', 4)).toEqual([
+      'candidate_00',
+      'candidate_01',
+      'candidate_02',
+      'candidate_03',
+    ]);
+  });
+
+  it('continues after the highest existing candidate index so no existing file is overwritten', () => {
+    writeProject('Existing', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/candidate_01.json': blank,
+      'candidates/first/candidate_03.json': blank,
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    // Highest is 03 → next four are 04..07. Gaps (candidate_02) are NOT
+    // refilled — sequential allocation keeps the on-disk listing in
+    // chronological order, which is what the gallery wants the user to see.
+    expect(store.allocateCandidateIds('Existing', 'first', 4)).toEqual([
+      'candidate_04',
+      'candidate_05',
+      'candidate_06',
+      'candidate_07',
+    ]);
+  });
+
+  it('ignores reserved marker files when computing the next index', () => {
+    writeProject('Locked', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/lock.json': { candidateId: 'candidate_00' },
+      'candidates/first/recipe.json': { width: 1, height: 1 },
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.allocateCandidateIds('Locked', 'first', 2)).toEqual([
+      'candidate_01',
+      'candidate_02',
+    ]);
+  });
+
+  it('uses three-digit padding once the index reaches 100', () => {
+    // Edge case: we want filename sort order to keep matching numeric order
+    // forever. With two-digit padding `candidate_100` would sort before
+    // `candidate_99`. The store widens the pad as needed.
+    const files: Record<string, unknown> = {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+    };
+    files['candidates/first/candidate_099.json'] = blank;
+    writeProject('Big', files);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.allocateCandidateIds('Big', 'first', 2)).toEqual([
+      'candidate_100',
+      'candidate_101',
+    ]);
+  });
+
+  it('rejects a non-positive count', () => {
+    writeProject('Bad', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.allocateCandidateIds('Bad', 'first', 0)).toThrow(/count/i);
+    expect(() => store.allocateCandidateIds('Bad', 'first', -1)).toThrow(/count/i);
+  });
+
+  it('rejects path-traversal in the project name', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.allocateCandidateIds('../escape', 'first', 1)).toThrow(/invalid project name/i);
+  });
+});
+
+describe('projectStore.appendCandidates', () => {
+  const palette = { version: 1, colors: [
+    { index: 0, rgba: '00000000' },
+    { index: 1, rgba: 'FF0000FF' },
+  ] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 2, height: 2 }));
+
+  it('writes each supplied grid to a freshly-allocated candidate file and returns the ids', () => {
+    writeProject('Append', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g1 = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const g2 = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 1, 1);
+    const ids = store.appendCandidates('Append', 'first', [g1, g2]);
+    expect(ids).toEqual(['candidate_01', 'candidate_02']);
+
+    const stageDir = path.join(tmpRoot, 'projects', 'Append', 'candidates', 'first');
+    expect(JSON.parse(fs.readFileSync(path.join(stageDir, 'candidate_01.json'), 'utf8'))).toEqual(
+      serializePixelGrid(g1),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(stageDir, 'candidate_02.json'), 'utf8'))).toEqual(
+      serializePixelGrid(g2),
+    );
+    // The pre-existing candidate is untouched.
+    expect(JSON.parse(fs.readFileSync(path.join(stageDir, 'candidate_00.json'), 'utf8'))).toEqual(
+      blank,
+    );
+  });
+
+  it('rejects an empty grids array', () => {
+    writeProject('NoGrids', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.appendCandidates('NoGrids', 'first', [])).toThrow(/at least one/i);
+  });
+});
+
+describe('projectStore.computeActiveStage', () => {
+  const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+
+  it('returns "first" when no stage has a lock marker yet', () => {
+    writeProject('Fresh', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.computeActiveStage('Fresh')).toBe('first');
+  });
+
+  it('returns "first" when candidates/first/ exists but no lock has been written', () => {
+    writeProject('Open', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.computeActiveStage('Open')).toBe('first');
+  });
+
+  it('returns "middle" once the first stage is locked', () => {
+    writeProject('AfterFirst', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/lock.json': { candidateId: 'candidate_00', recipe: {} },
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.computeActiveStage('AfterFirst')).toBe('middle');
+  });
+
+  it('rejects path-traversal in the project name', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.computeActiveStage('../escape')).toThrow(/invalid project name/i);
+  });
+});

@@ -72,6 +72,35 @@ export interface ProjectStore {
    */
   listProjects(): string[];
   /**
+   * The workflow stage a "generate N more candidates" call should currently
+   * target — derived purely from disk: the first stage whose
+   * `candidates/<stage>/lock.json` does not exist. Once `first` is locked
+   * the active stage advances to `middle`, etc. Pure read; never mutates.
+   *
+   * Used by the "generate 4 more" command surface (issue #14) so Claude
+   * does not have to inspect the filesystem itself before authoring more
+   * candidates.
+   */
+  computeActiveStage(name: string): Stage;
+  /**
+   * Allocate `count` fresh, sequential candidate ids for `stage`. The
+   * returned ids never collide with existing candidate files or with
+   * reserved marker filenames. Padding widens automatically once the
+   * sequence crosses an order of magnitude so on-disk listings stay
+   * lexicographically sorted.
+   *
+   * Pure compute over a directory listing — does not write anything.
+   * Pair with `writeCandidate` (or `appendCandidates` for the batch case)
+   * to actually persist the new candidates.
+   */
+  allocateCandidateIds(name: string, stage: Stage, count: number): string[];
+  /**
+   * "Generate N more candidates" in one atomic call: allocate sequential
+   * ids, write each grid to its candidate slot, return the ids. Lets the
+   * HTTP command surface stay a single POST instead of N round-trips.
+   */
+  appendCandidates(name: string, stage: Stage, grids: ReadonlyArray<PixelGrid>): string[];
+  /**
    * All candidate grids for one stage of the workflow, sorted by filename.
    * Returns an empty array when the stage directory has not been created yet
    * — that is the legitimate "no candidates generated yet" state.
@@ -275,6 +304,74 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     );
   }
 
+  function computeActiveStage(name: string): Stage {
+    const dir = projectDir(name);
+    // Walk the stage order; the first unlocked stage is the active one.
+    // `STAGE_AFTER` (and friends) live in workflowMachine, so we duplicate
+    // the order locally to avoid pulling reducer guts into the filesystem
+    // adapter. When middle/last are wired (#15 / #17) extend this array
+    // alongside the workflow machine's Stage union — the type checker
+    // ensures we don't drift.
+    const order: ReadonlyArray<Stage> = ['first', 'middle'];
+    for (const stage of order) {
+      const lockPath = path.join(dir, 'candidates', stage, LOCK_MARKER_FILE);
+      if (!fs.existsSync(lockPath)) return stage;
+    }
+    // Every known stage is locked. Until tweening exists (#18) the final
+    // stage in the order is the right answer — there is no "after" yet.
+    return order[order.length - 1]!;
+  }
+
+  function allocateCandidateIds(name: string, stage: Stage, count: number): string[] {
+    if (!Number.isInteger(count) || count <= 0) {
+      throw new Error(`projectStore: count must be a positive integer, got ${count}`);
+    }
+    const stageDir = path.join(projectDir(name), 'candidates', stage);
+    // Find the highest existing candidate_NN index by parsing filenames.
+    // Reserved marker files (lock.json / recipe.json) are ignored so they
+    // do not influence the next index.
+    let highest = -1;
+    if (fs.existsSync(stageDir) && fs.statSync(stageDir).isDirectory()) {
+      for (const f of fs.readdirSync(stageDir)) {
+        if (!f.toLowerCase().endsWith('.json')) continue;
+        if (STAGE_RESERVED_FILES.has(f.toLowerCase())) continue;
+        const m = /^candidate_(\d+)\.json$/i.exec(f);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > highest) highest = n;
+      }
+    }
+    const start = highest + 1;
+    const end = start + count - 1;
+    // Pad to whichever is wider — the existing files' padding (so we don't
+    // unintentionally shorten) or the new high-water mark's natural width.
+    // `String(N).length` gives the natural width of the final id.
+    const naturalWidth = String(end).length;
+    const minWidth = 2; // candidate_00 is the legacy floor.
+    const width = Math.max(minWidth, naturalWidth);
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const n = start + i;
+      ids.push(`candidate_${String(n).padStart(width, '0')}`);
+    }
+    return ids;
+  }
+
+  function appendCandidates(
+    name: string,
+    stage: Stage,
+    grids: ReadonlyArray<PixelGrid>,
+  ): string[] {
+    if (grids.length === 0) {
+      throw new Error('projectStore: appendCandidates requires at least one grid');
+    }
+    const ids = allocateCandidateIds(name, stage, grids.length);
+    for (let i = 0; i < ids.length; i++) {
+      writeCandidate(name, stage, ids[i]!, grids[i]!);
+    }
+    return ids;
+  }
+
   function readLock(name: string, stage: Stage): LockMarker | undefined {
     const stageDir = path.join(projectDir(name), 'candidates', stage);
     const lockPath = path.join(stageDir, LOCK_MARKER_FILE);
@@ -323,5 +420,16 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     );
   }
 
-  return { readProject, listProjects, readCandidates, writeLock, readLock, writeFrame, writeCandidate };
+  return {
+    readProject,
+    listProjects,
+    computeActiveStage,
+    allocateCandidateIds,
+    appendCandidates,
+    readCandidates,
+    writeLock,
+    readLock,
+    writeFrame,
+    writeCandidate,
+  };
 }
