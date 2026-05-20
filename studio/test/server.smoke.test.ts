@@ -178,6 +178,53 @@ describe('http server (smoke)', () => {
     expect(session.getActiveProject()).toBe('Hello');
   });
 
+  it('GET /api/projects/:name/candidates/first returns every candidate grid', async () => {
+    writeProject('Hello');
+    // Drop two candidate grids into the first-stage directory.
+    const projDir = path.join(tmpRoot, 'projects', 'Hello');
+    fs.mkdirSync(path.join(projDir, 'candidates', 'first'), { recursive: true });
+    const g0 = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    const g1 = serializePixelGrid(setPixel(createPixelGrid({ width: 1, height: 1 }), 0, 0, 1));
+    fs.writeFileSync(path.join(projDir, 'candidates', 'first', 'candidate_00.json'), JSON.stringify(g0), 'utf8');
+    fs.writeFileSync(path.join(projDir, 'candidates', 'first', 'candidate_01.json'), JSON.stringify(g1), 'utf8');
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/Hello/candidates/first`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.stage).toBe('first');
+    expect(body.candidates).toHaveLength(2);
+    expect(body.candidates[0].id).toBe('candidate_00');
+    expect(body.candidates[0].fileName).toBe('candidate_00.json');
+    expect(body.candidates[0].grid.pixels).toEqual([[0]]);
+    expect(body.candidates[1].id).toBe('candidate_01');
+    expect(body.candidates[1].grid.pixels).toEqual([[1]]);
+  });
+
+  it('GET /api/projects/:name/candidates/first returns an empty array when no candidates exist', async () => {
+    writeProject('Hello');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/Hello/candidates/first`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ stage: 'first', candidates: [] });
+  });
+
+  it('GET /api/projects/:name/candidates/unknown returns 400 for an unknown stage', async () => {
+    writeProject('Hello');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hello');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/Hello/candidates/middle`);
+    expect(res.status).toBe(400);
+  });
+
   it('POST /api/active-project rejects a malformed body', async () => {
     writeProject('Hello');
     const store = createProjectStore({ repoRoot: tmpRoot });

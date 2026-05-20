@@ -83,6 +83,45 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           return;
         }
 
+        // GET /api/projects/:name/candidates/:stage -> { stage, candidates }
+        // Returns every candidate grid for the requested workflow stage of
+        // the named project. Matches before the bare /api/projects/:name
+        // route so the longer path wins on the regex order.
+        const candMatch = /^\/api\/projects\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
+        if (candMatch && req.method === 'GET') {
+          const requested = decodeURIComponent(candMatch[1]!);
+          const stageStr = decodeURIComponent(candMatch[2]!);
+          if (stageStr !== 'first') {
+            // Only the `first` stage exists in this slice. Later issues
+            // (#15 middle, #17 last) widen this check alongside extending
+            // the workflow reducer's Stage type.
+            sendError(res, 400, `unknown stage '${stageStr}'`);
+            return;
+          }
+          try {
+            const candidates = store.readCandidates(requested, stageStr);
+            sendJson(res, 200, {
+              stage: stageStr,
+              candidates: candidates.map((c) => ({
+                id: c.id,
+                fileName: c.fileName,
+                grid: {
+                  version: 1 as const,
+                  width: c.grid.width,
+                  height: c.grid.height,
+                  hotspot: c.grid.hotspot,
+                  pixels: c.grid.pixels.map((row) => [...row]),
+                },
+              })),
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
         // GET /api/projects/:name -> { project }
         const apiMatch = /^\/api\/projects\/([^/]+)$/.exec(pathname);
         if (apiMatch && req.method === 'GET') {
