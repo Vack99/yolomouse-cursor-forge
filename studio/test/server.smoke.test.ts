@@ -238,4 +238,130 @@ describe('http server (smoke)', () => {
     });
     expect(post.status).toBe(400);
   });
+
+  // Issue #12 — POST /api/projects/:name/lock locks a candidate as the
+  // canonical frame for a stage. The corresponding GET endpoint surfaces
+  // the lock so the workflow reducer can rehydrate stage state on reload.
+
+  function writeCandidates(name: string, ids: string[]): void {
+    const projDir = path.join(tmpRoot, 'projects', name);
+    fs.mkdirSync(path.join(projDir, 'candidates', 'first'), { recursive: true });
+    for (const id of ids) {
+      const g = setPixel(createPixelGrid({ width: 1, height: 1 }), 0, 0, 1);
+      fs.writeFileSync(
+        path.join(projDir, 'candidates', 'first', `${id}.json`),
+        JSON.stringify(serializePixelGrid(g)),
+        'utf8',
+      );
+    }
+  }
+
+  it('POST /api/projects/:name/lock freezes the candidate as the canonical frame', async () => {
+    writeProject('Lockable');
+    writeCandidates('Lockable', ['candidate_00', 'candidate_01']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Lockable');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/projects/Lockable/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first', candidateId: 'candidate_00' }),
+    });
+    expect(post.status).toBe(200);
+    const body = await post.json();
+    expect(body.stage).toBe('first');
+    expect(body.lock.candidateId).toBe('candidate_00');
+    expect(body.lock.recipe.width).toBe(1);
+    expect(body.lock.recipe.paletteIndices).toEqual([1]);
+
+    // The frame file was overwritten with the locked candidate's grid.
+    const frame = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, 'projects', 'Lockable', 'frames', 'frame_00.json'), 'utf8'),
+    );
+    expect(frame.pixels).toEqual([[1]]);
+    // Marker + recipe files are on disk.
+    expect(
+      fs.existsSync(path.join(tmpRoot, 'projects', 'Lockable', 'candidates', 'first', 'lock.json')),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(tmpRoot, 'projects', 'Lockable', 'candidates', 'first', 'recipe.json')),
+    ).toBe(true);
+  });
+
+  it('GET /api/projects/:name/candidates/first reports the lock once written', async () => {
+    writeProject('LockEcho');
+    writeCandidates('LockEcho', ['candidate_00']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'LockEcho');
+    server = await startServer({ store, session, distDir });
+
+    // Sanity — lock starts unset.
+    const before = (await (await fetch(`${server.url}api/projects/LockEcho/candidates/first`)).json()) as {
+      lock?: unknown;
+    };
+    expect(before.lock).toBeUndefined();
+
+    await fetch(`${server.url}api/projects/LockEcho/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first', candidateId: 'candidate_00' }),
+    });
+
+    const after = (await (await fetch(`${server.url}api/projects/LockEcho/candidates/first`)).json()) as {
+      stage: string;
+      lock?: { candidateId: string };
+    };
+    expect(after.lock?.candidateId).toBe('candidate_00');
+  });
+
+  it('POST /api/projects/:name/lock returns 400 when the candidate does not exist', async () => {
+    writeProject('NoCand');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'NoCand');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/projects/NoCand/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first', candidateId: 'ghost' }),
+    });
+    expect(post.status).toBe(400);
+  });
+
+  it('POST /api/projects/:name/lock returns 409 when the stage is already locked', async () => {
+    writeProject('Twice');
+    writeCandidates('Twice', ['candidate_00', 'candidate_01']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Twice');
+    server = await startServer({ store, session, distDir });
+
+    const first = await fetch(`${server.url}api/projects/Twice/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first', candidateId: 'candidate_00' }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await fetch(`${server.url}api/projects/Twice/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first', candidateId: 'candidate_01' }),
+    });
+    expect(second.status).toBe(409);
+  });
+
+  it('POST /api/projects/:name/lock rejects a malformed body', async () => {
+    writeProject('BadBody');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'BadBody');
+    server = await startServer({ store, session, distDir });
+
+    const post = await fetch(`${server.url}api/projects/BadBody/lock`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stage: 'first' }),
+    });
+    expect(post.status).toBe(400);
+  });
 });

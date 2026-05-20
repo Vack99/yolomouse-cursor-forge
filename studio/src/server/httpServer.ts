@@ -8,6 +8,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ProjectStore } from './projectStore.js';
 import type { ActiveProjectSession } from './activeProjectSession.js';
+import { extractRecipe } from '../lib/workflowMachine.js';
+import type { Stage } from '../lib/workflowMachine.js';
 
 export interface ServerOptions {
   store: ProjectStore;
@@ -83,23 +85,25 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           return;
         }
 
-        // GET /api/projects/:name/candidates/:stage -> { stage, candidates }
+        // GET /api/projects/:name/candidates/:stage -> { stage, candidates, lock? }
         // Returns every candidate grid for the requested workflow stage of
-        // the named project. Matches before the bare /api/projects/:name
-        // route so the longer path wins on the regex order.
+        // the named project, plus the lock marker when the stage has been
+        // locked. Matches before the bare /api/projects/:name route so the
+        // longer path wins on the regex order.
         const candMatch = /^\/api\/projects\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
         if (candMatch && req.method === 'GET') {
           const requested = decodeURIComponent(candMatch[1]!);
           const stageStr = decodeURIComponent(candMatch[2]!);
           if (stageStr !== 'first') {
-            // Only the `first` stage exists in this slice. Later issues
-            // (#15 middle, #17 last) widen this check alongside extending
-            // the workflow reducer's Stage type.
+            // Only the `first` stage's candidate read is wired today.
+            // Later issues (#15 middle, #17 last) widen this check
+            // alongside building their stage's candidate directory layout.
             sendError(res, 400, `unknown stage '${stageStr}'`);
             return;
           }
           try {
             const candidates = store.readCandidates(requested, stageStr);
+            const lock = store.readLock(requested, stageStr);
             sendJson(res, 200, {
               stage: stageStr,
               candidates: candidates.map((c) => ({
@@ -113,10 +117,59 @@ export function createApp(opts: ServerOptions): http.RequestListener {
                   pixels: c.grid.pixels.map((row) => [...row]),
                 },
               })),
+              ...(lock !== undefined ? { lock } : {}),
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // POST /api/projects/:name/lock { stage, candidateId } -> { stage, lock }
+        // Freezes the named candidate as the canonical frame for the stage
+        // and persists the recipe. One-shot per stage — the project store
+        // refuses to overwrite. Delegates recipe extraction so the HTTP
+        // layer never builds Recipe by hand.
+        const lockMatch = /^\/api\/projects\/([^/]+)\/lock$/.exec(pathname);
+        if (lockMatch && req.method === 'POST') {
+          const requested = decodeURIComponent(lockMatch[1]!);
+          let body: { stage?: unknown; candidateId?: unknown };
+          try {
+            const raw = await readBody(req);
+            body = JSON.parse(raw) as { stage?: unknown; candidateId?: unknown };
+          } catch {
+            sendError(res, 400, 'body must be valid JSON');
+            return;
+          }
+          if (body.stage !== 'first') {
+            sendError(res, 400, "body.stage must be 'first'");
+            return;
+          }
+          if (typeof body.candidateId !== 'string' || body.candidateId.length === 0) {
+            sendError(res, 400, "body.candidateId must be a non-empty string");
+            return;
+          }
+          const stage: Stage = body.stage;
+          const candidateId = body.candidateId;
+          try {
+            const candidates = store.readCandidates(requested, stage);
+            const chosen = candidates.find((c) => c.id === candidateId);
+            if (chosen === undefined) {
+              sendError(res, 400, `candidate '${candidateId}' not found in stage '${stage}'`);
+              return;
+            }
+            const recipe = extractRecipe(chosen.grid);
+            store.writeLock(requested, stage, { candidateId, grid: chosen.grid, recipe });
+            const lock = store.readLock(requested, stage);
+            sendJson(res, 200, { stage, lock });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status =
+              /already locked/i.test(msg) ? 409
+                : /not found/i.test(msg) ? 404
+                  : 400;
             sendError(res, status, msg);
           }
           return;
