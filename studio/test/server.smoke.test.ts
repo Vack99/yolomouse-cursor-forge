@@ -364,4 +364,113 @@ describe('http server (smoke)', () => {
     });
     expect(post.status).toBe(400);
   });
+
+  // Issue #13 — PUT endpoints persist pixel-editor edits back to disk.
+  // Body shape mirrors the GET payload so the frontend can round-trip
+  // grid → edit → grid through the same parser.
+
+  it('PUT /api/projects/:name/frames/:fileName overwrites the frame on disk', async () => {
+    writeProject('Editable');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Editable');
+    server = await startServer({ store, session, distDir });
+
+    const edited = setPixel(createPixelGrid({ width: 2, height: 2, hotspot: { x: 0, y: 1 } }), 0, 1, 1);
+    const put = await fetch(`${server.url}api/projects/Editable/frames/frame_00.json`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(edited) }),
+    });
+    expect(put.status).toBe(200);
+
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, 'projects', 'Editable', 'frames', 'frame_00.json'), 'utf8'),
+    );
+    expect(raw).toEqual(serializePixelGrid(edited));
+  });
+
+  it('PUT /api/projects/:name/frames/:fileName rejects a non-frame filename', async () => {
+    writeProject('Editable');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Editable');
+    server = await startServer({ store, session, distDir });
+
+    const g = createPixelGrid({ width: 1, height: 1 });
+    const put = await fetch(`${server.url}api/projects/Editable/frames/notes.txt`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(g) }),
+    });
+    expect(put.status).toBe(400);
+  });
+
+  it('PUT /api/projects/:name/frames/:fileName rejects a malformed grid body', async () => {
+    writeProject('Editable');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Editable');
+    server = await startServer({ store, session, distDir });
+
+    const put = await fetch(`${server.url}api/projects/Editable/frames/frame_00.json`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: { width: 'not a number' } }),
+    });
+    expect(put.status).toBe(400);
+  });
+
+  it('PUT /api/projects/:name/candidates/:stage/:id overwrites the candidate on disk', async () => {
+    writeProject('CandEdit');
+    writeCandidates('CandEdit', ['candidate_00']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'CandEdit');
+    server = await startServer({ store, session, distDir });
+
+    const edited = setPixel(createPixelGrid({ width: 1, height: 1 }), 0, 0, 2);
+    const put = await fetch(`${server.url}api/projects/CandEdit/candidates/first/candidate_00`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(edited) }),
+    });
+    expect(put.status).toBe(200);
+
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpRoot, 'projects', 'CandEdit', 'candidates', 'first', 'candidate_00.json'),
+        'utf8',
+      ),
+    );
+    expect(raw.pixels).toEqual([[2]]);
+  });
+
+  it('PUT /api/projects/:name/candidates/:stage/:id rejects an unknown stage', async () => {
+    writeProject('CandStage');
+    writeCandidates('CandStage', ['candidate_00']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'CandStage');
+    server = await startServer({ store, session, distDir });
+
+    const g = createPixelGrid({ width: 1, height: 1 });
+    const put = await fetch(`${server.url}api/projects/CandStage/candidates/middle/candidate_00`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(g) }),
+    });
+    expect(put.status).toBe(400);
+  });
+
+  it('PUT /api/projects/:name/candidates/:stage/:id rejects the reserved lock / recipe ids', async () => {
+    writeProject('Reserved');
+    writeCandidates('Reserved', ['candidate_00']);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Reserved');
+    server = await startServer({ store, session, distDir });
+
+    const g = createPixelGrid({ width: 1, height: 1 });
+    const put = await fetch(`${server.url}api/projects/Reserved/candidates/first/lock`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(g) }),
+    });
+    expect(put.status).toBe(400);
+  });
 });

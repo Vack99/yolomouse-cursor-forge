@@ -10,6 +10,7 @@ import type { ProjectStore } from './projectStore.js';
 import type { ActiveProjectSession } from './activeProjectSession.js';
 import { extractRecipe } from '../lib/workflowMachine.js';
 import type { Stage } from '../lib/workflowMachine.js';
+import { parsePixelGrid } from '../lib/pixelGrid.js';
 
 export interface ServerOptions {
   store: ProjectStore;
@@ -170,6 +171,75 @@ export function createApp(opts: ServerOptions): http.RequestListener {
               /already locked/i.test(msg) ? 409
                 : /not found/i.test(msg) ? 404
                   : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // PUT /api/projects/:name/frames/:fileName { grid } -> { ok: true }
+        // Persists an in-canvas pixel-editor edit (issue #13). The body's
+        // `grid` payload is the same shape `parsePixelGrid` accepts so the
+        // editor can round-trip exactly what it reads from GET. Filename and
+        // project-name validation live in the project store — the route just
+        // unwraps the body and forwards.
+        const frameWriteMatch = /^\/api\/projects\/([^/]+)\/frames\/([^/]+)$/.exec(pathname);
+        if (frameWriteMatch && req.method === 'PUT') {
+          const requested = decodeURIComponent(frameWriteMatch[1]!);
+          const fileName = decodeURIComponent(frameWriteMatch[2]!);
+          let body: { grid?: unknown };
+          try {
+            const raw = await readBody(req, 1024 * 1024);
+            body = JSON.parse(raw) as { grid?: unknown };
+          } catch {
+            sendError(res, 400, 'body must be valid JSON');
+            return;
+          }
+          if (body.grid === undefined || body.grid === null) {
+            sendError(res, 400, "body must include a 'grid' object");
+            return;
+          }
+          try {
+            const grid = parsePixelGrid(body.grid);
+            store.writeFrame(requested, fileName, grid);
+            sendJson(res, 200, { ok: true });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // PUT /api/projects/:name/candidates/:stage/:id { grid } -> { ok: true }
+        // Sister route to the frames PUT for editing candidate grids.
+        const candWriteMatch = /^\/api\/projects\/([^/]+)\/candidates\/([^/]+)\/([^/]+)$/.exec(pathname);
+        if (candWriteMatch && req.method === 'PUT') {
+          const requested = decodeURIComponent(candWriteMatch[1]!);
+          const stageStr = decodeURIComponent(candWriteMatch[2]!);
+          const id = decodeURIComponent(candWriteMatch[3]!);
+          if (stageStr !== 'first') {
+            sendError(res, 400, `unknown stage '${stageStr}'`);
+            return;
+          }
+          let body: { grid?: unknown };
+          try {
+            const raw = await readBody(req, 1024 * 1024);
+            body = JSON.parse(raw) as { grid?: unknown };
+          } catch {
+            sendError(res, 400, 'body must be valid JSON');
+            return;
+          }
+          if (body.grid === undefined || body.grid === null) {
+            sendError(res, 400, "body must include a 'grid' object");
+            return;
+          }
+          try {
+            const grid = parsePixelGrid(body.grid);
+            store.writeCandidate(requested, stageStr, id, grid);
+            sendJson(res, 200, { ok: true });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
             sendError(res, status, msg);
           }
           return;
