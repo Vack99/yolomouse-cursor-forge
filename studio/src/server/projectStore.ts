@@ -104,6 +104,20 @@ export interface ProjectStore {
    * `{ candidateId, recipe }` once both marker files are present.
    */
   readLock(name: string, stage: Stage): LockMarker | undefined;
+  /**
+   * Persist a pixel-editor edit to one of the project's frame files.
+   * `fileName` must match the `frame_NN.json` pattern — anything else is
+   * refused so a bug in the HTTP routing cannot escape the frames/ folder.
+   * Overwrites unconditionally; the editor reducer owns "no change → don't
+   * write" debouncing.
+   */
+  writeFrame(name: string, fileName: string, grid: PixelGrid): void;
+  /**
+   * Persist a pixel-editor edit to one of the stage's candidate files.
+   * `id` is the candidate basename without `.json`. Rejects the reserved
+   * `lock` / `recipe` ids so a stray edit cannot corrupt the lock markers.
+   */
+  writeCandidate(name: string, stage: Stage, id: string, grid: PixelGrid): void;
 }
 
 export interface ProjectStoreOptions {
@@ -112,6 +126,15 @@ export interface ProjectStoreOptions {
 }
 
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// frame files must look like `frame_NN.json` (any number of digits after the
+// underscore — `forge build` already tolerates `frame_000.json` for >100
+// frames). Anchored so a slash or path-traversal segment is rejected.
+const FRAME_FILE_PATTERN = /^frame_\d+\.json$/;
+// Candidate ids share the project-name shape — alphanumerics, dots, dashes,
+// underscores. A bare basename, no extension. Reserved ids (lock, recipe)
+// are filtered separately.
+const CANDIDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RESERVED_CANDIDATE_IDS = new Set<string>(['lock', 'recipe']);
 
 // Reserved files inside candidates/<stage>/. They live next to the candidate
 // JSON files but are not themselves candidates — they describe the lock
@@ -263,5 +286,42 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     return { candidateId: raw.candidateId, recipe: raw.recipe as Recipe };
   }
 
-  return { readProject, listProjects, readCandidates, writeLock, readLock };
+  function writeFrame(name: string, fileName: string, grid: PixelGrid): void {
+    const dir = projectDir(name);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      throw new Error(`projectStore: project '${name}' not found at ${dir}`);
+    }
+    if (!FRAME_FILE_PATTERN.test(fileName)) {
+      throw new Error(`projectStore: invalid frame file name '${fileName}'`);
+    }
+    const framesDir = path.join(dir, 'frames');
+    fs.mkdirSync(framesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(framesDir, fileName),
+      JSON.stringify(serializePixelGrid(grid), null, 2),
+      'utf8',
+    );
+  }
+
+  function writeCandidate(name: string, stage: Stage, id: string, grid: PixelGrid): void {
+    const dir = projectDir(name);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      throw new Error(`projectStore: project '${name}' not found at ${dir}`);
+    }
+    if (RESERVED_CANDIDATE_IDS.has(id.toLowerCase())) {
+      throw new Error(`projectStore: '${id}' is a reserved candidate id`);
+    }
+    if (!CANDIDATE_ID_PATTERN.test(id)) {
+      throw new Error(`projectStore: invalid candidate id '${id}'`);
+    }
+    const stageDir = path.join(dir, 'candidates', stage);
+    fs.mkdirSync(stageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stageDir, `${id}.json`),
+      JSON.stringify(serializePixelGrid(grid), null, 2),
+      'utf8',
+    );
+  }
+
+  return { readProject, listProjects, readCandidates, writeLock, readLock, writeFrame, writeCandidate };
 }

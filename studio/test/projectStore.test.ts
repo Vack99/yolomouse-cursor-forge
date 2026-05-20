@@ -362,3 +362,96 @@ describe('projectStore.writeLock / readLock', () => {
     ).toThrow(/already locked/i);
   });
 });
+
+// writeFrame / writeCandidate — used by the in-canvas pixel editor (#13)
+// to persist pixel edits back to disk. Both are simple overwrites; the
+// editor reducer owns the "no change → don't write" check, the store just
+// writes what it is told. Reject path traversal and unknown projects loud
+// so a bug in the editor cannot escape its project directory.
+
+describe('projectStore.writeFrame', () => {
+  const palette = { version: 1, colors: [
+    { index: 0, rgba: '00000000' },
+    { index: 1, rgba: 'FF0000FF' },
+  ] };
+
+  it('writes the supplied grid to frames/<fileName> as serialised JSON', () => {
+    const blank = serializePixelGrid(createPixelGrid({ width: 2, height: 2 }));
+    writeProject('Edits', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const edited = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 1, 1);
+    store.writeFrame('Edits', 'frame_00.json', edited);
+
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, 'projects', 'Edits', 'frames', 'frame_00.json'), 'utf8'),
+    );
+    expect(raw).toEqual(serializePixelGrid(edited));
+  });
+
+  it('rejects path-traversal in the project name', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = createPixelGrid({ width: 1, height: 1 });
+    expect(() => store.writeFrame('../escape', 'frame_00.json', g)).toThrow(/invalid project name/i);
+  });
+
+  it('rejects a frame filename that does not match the frame_NN.json pattern', () => {
+    const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+    writeProject('FrameName', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = createPixelGrid({ width: 1, height: 1 });
+    // Any slash, ..-segment, or non-conforming basename must be refused —
+    // the HTTP layer takes this from the URL.
+    expect(() => store.writeFrame('FrameName', '../escape.json', g)).toThrow(/frame file name/i);
+    expect(() => store.writeFrame('FrameName', 'frame_00.txt', g)).toThrow(/frame file name/i);
+    expect(() => store.writeFrame('FrameName', 'a/b.json', g)).toThrow(/frame file name/i);
+  });
+
+  it('throws when the project does not exist', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.writeFrame('Ghost', 'frame_00.json', createPixelGrid({ width: 1, height: 1 }))).toThrow(
+      /not found/i,
+    );
+  });
+});
+
+describe('projectStore.writeCandidate', () => {
+  const palette = { version: 1, colors: [
+    { index: 0, rgba: '00000000' },
+    { index: 1, rgba: 'FF0000FF' },
+  ] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 2, height: 2 }));
+
+  it('writes the supplied grid to candidates/<stage>/<id>.json', () => {
+    writeProject('CandEdit', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const edited = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 0, 1);
+    store.writeCandidate('CandEdit', 'first', 'candidate_00', edited);
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpRoot, 'projects', 'CandEdit', 'candidates', 'first', 'candidate_00.json'),
+        'utf8',
+      ),
+    );
+    expect(raw).toEqual(serializePixelGrid(edited));
+  });
+
+  it('refuses to write to the reserved lock.json / recipe.json marker ids', () => {
+    writeProject('Reserved', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = createPixelGrid({ width: 1, height: 1 });
+    expect(() => store.writeCandidate('Reserved', 'first', 'lock', g)).toThrow(/reserved/i);
+    expect(() => store.writeCandidate('Reserved', 'first', 'recipe', g)).toThrow(/reserved/i);
+  });
+
+  it('rejects a candidate id with path-traversal characters', () => {
+    writeProject('CandPath', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = createPixelGrid({ width: 1, height: 1 });
+    expect(() => store.writeCandidate('CandPath', 'first', '../escape', g)).toThrow(/candidate id/i);
+    expect(() => store.writeCandidate('CandPath', 'first', 'a/b', g)).toThrow(/candidate id/i);
+  });
+});
