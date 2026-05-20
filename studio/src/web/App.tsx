@@ -1,5 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useReducer, useState, type Reducer } from 'react';
 import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
+import {
+  createWorkflowState,
+  reduceWorkflow,
+  type WorkflowAction,
+  type WorkflowState,
+} from '../lib/workflowMachine.js';
 import { PixelCanvas } from './PixelCanvas.js';
 import { useReloadChannel } from './useReloadChannel.js';
 
@@ -13,16 +19,43 @@ interface Palette {
   colors: PaletteEntry[];
 }
 
+interface FramePayload {
+  fileName: string;
+  grid: unknown;
+}
+
 interface ProjectResponse {
   name: string;
   palette: Palette;
-  frames: Array<{ fileName: string; grid: unknown }>;
+  frames: FramePayload[];
+}
+
+interface CandidatePayload {
+  id: string;
+  fileName: string;
+  grid: unknown;
+}
+
+interface CandidatesResponse {
+  stage: 'first';
+  candidates: CandidatePayload[];
+}
+
+interface LoadedCandidate {
+  id: string;
+  fileName: string;
+  grid: PixelGrid;
 }
 
 interface LoadedProject {
   name: string;
   palette: Palette;
   frames: Array<{ fileName: string; grid: PixelGrid }>;
+  /**
+   * First-frame stage candidates loaded from disk. Empty when the project
+   * has not yet had any candidate JSON generated.
+   */
+  firstCandidates: LoadedCandidate[];
 }
 
 type State =
@@ -41,10 +74,23 @@ async function loadActiveProject(): Promise<LoadedProject> {
     throw new Error(body.error ?? `HTTP ${projRes.status}`);
   }
   const payload = (await projRes.json()) as ProjectResponse;
+
+  const candRes = await fetch(`/api/projects/${encodeURIComponent(name)}/candidates/first`);
+  if (!candRes.ok) {
+    const body = (await candRes.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${candRes.status}`);
+  }
+  const candPayload = (await candRes.json()) as CandidatesResponse;
+
   return {
     name: payload.name,
     palette: payload.palette,
     frames: payload.frames.map((f) => ({ fileName: f.fileName, grid: parsePixelGrid(f.grid) })),
+    firstCandidates: candPayload.candidates.map((c) => ({
+      id: c.id,
+      fileName: c.fileName,
+      grid: parsePixelGrid(c.grid),
+    })),
   };
 }
 
@@ -70,6 +116,16 @@ async function postActiveProject(name: string): Promise<void> {
 export function App(): JSX.Element {
   const [state, setState] = useState<State>({ status: 'loading' });
   const [projects, setProjects] = useState<string[]>([]);
+  // The workflow reducer holds candidate selection state. Lives alongside
+  // `state` rather than inside it because selection survives across project
+  // reloads (the reducer preserves a still-valid selection on
+  // candidates-loaded), and we want React to re-render on a selection click
+  // without a network round-trip.
+  // useReducer's React-18 generic typings are fiddly with strict mode; the
+  // simplest no-cast spelling is to give the reducer fn an explicit pair of
+  // type parameters via a local alias.
+  const workflowReducer: Reducer<WorkflowState, WorkflowAction> = reduceWorkflow;
+  const [workflow, dispatchWorkflow] = useReducer(workflowReducer, createWorkflowState());
 
   const refresh = useCallback((): void => {
     // Always re-read the project list at the same time as the active
@@ -79,6 +135,11 @@ export function App(): JSX.Element {
       .then(([project, list]) => {
         setProjects(list);
         setState({ status: 'ready', project });
+        dispatchWorkflow({
+          type: 'candidates-loaded',
+          stage: 'first',
+          ids: project.firstCandidates.map((c) => c.id),
+        });
       })
       .catch((err: unknown) => {
         setState({
@@ -95,6 +156,11 @@ export function App(): JSX.Element {
         if (cancelled) return;
         setProjects(list);
         setState({ status: 'ready', project });
+        dispatchWorkflow({
+          type: 'candidates-loaded',
+          stage: 'first',
+          ids: project.firstCandidates.map((c) => c.id),
+        });
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -110,11 +176,10 @@ export function App(): JSX.Element {
   }, []);
 
   // Live filesystem sync: server pushes a `reload` frame whenever a JSON
-  // frame, palette.json, or the active project itself changes. We refetch —
-  // the server is the single source of truth (PRD: "the filesystem is the
-  // single source of truth"), so a fresh read is the right thing every
-  // time. This is also how a programmatic switch from Claude's terminal
-  // shows up here without a manual UI action.
+  // frame, candidate, palette.json, or the active project itself changes.
+  // We refetch — the server is the single source of truth (PRD: "the
+  // filesystem is the single source of truth"), so a fresh read is the
+  // right thing every time.
   useReloadChannel({ onReload: refresh });
 
   const onPickProject = useCallback(
@@ -134,6 +199,10 @@ export function App(): JSX.Element {
     },
     [state],
   );
+
+  const onPickCandidate = useCallback((id: string): void => {
+    dispatchWorkflow({ type: 'select', stage: 'first', id });
+  }, []);
 
   if (state.status === 'loading') {
     return (
@@ -165,22 +234,40 @@ export function App(): JSX.Element {
   }
 
   const { project } = state;
-  const frame = project.frames[0]!;
+  // When the first-frame stage has candidates, the gallery is the main
+  // surface. Otherwise we fall back to the first frame — useful for the
+  // tracer slice and for inspecting already-tweened animations.
+  const selectedCandidate =
+    project.firstCandidates.find((c) => c.id === workflow.selected.first) ??
+    project.firstCandidates[0];
+
+  const showCandidates = project.firstCandidates.length > 0 && selectedCandidate !== undefined;
+  const mainGrid = showCandidates ? selectedCandidate!.grid : project.frames[0]!.grid;
+  const mainLabel = showCandidates ? selectedCandidate!.fileName : project.frames[0]!.fileName;
+
   return (
     <div className="studio">
       <header className="studio__header">
         <h1 className="studio__title">Cursor Studio</h1>
         <ProjectPicker projects={projects} active={project.name} onPick={onPickProject} />
         <span className="studio__meta">
-          {frame.grid.width}×{frame.grid.height} · hotspot ({frame.grid.hotspot.x},{frame.grid.hotspot.y}) ·{' '}
-          {frame.fileName}
+          {mainGrid.width}×{mainGrid.height} · hotspot ({mainGrid.hotspot.x},{mainGrid.hotspot.y}) ·{' '}
+          {mainLabel}
         </span>
       </header>
       <main className="studio__stage">
         <div className="studio__canvas-wrap">
-          <PixelCanvas grid={frame.grid} palette={project.palette} pixelSize={16} />
+          <PixelCanvas grid={mainGrid} palette={project.palette} pixelSize={16} />
         </div>
       </main>
+      {showCandidates ? (
+        <CandidateStrip
+          candidates={project.firstCandidates}
+          palette={project.palette}
+          selectedId={selectedCandidate!.id}
+          onPick={onPickCandidate}
+        />
+      ) : null}
     </div>
   );
 }
@@ -216,5 +303,43 @@ function ProjectPicker({ projects, active, onPick }: ProjectPickerProps): JSX.El
         ))}
       </select>
     </label>
+  );
+}
+
+interface CandidateStripProps {
+  candidates: LoadedCandidate[];
+  palette: Palette;
+  selectedId: string;
+  onPick: (id: string) => void;
+}
+
+/**
+ * Bottom thumbnail strip — one button per candidate. The selected one is
+ * highlighted so the user always knows which thumbnail the main view is
+ * mirroring. Each thumbnail is the same PixelCanvas component the main view
+ * uses, just shrunk; that keeps the pixel-grid overlay and hotspot
+ * crosshair visible at thumbnail scale.
+ */
+function CandidateStrip({ candidates, palette, selectedId, onPick }: CandidateStripProps): JSX.Element {
+  return (
+    <footer className="studio__strip" role="tablist" aria-label="First-frame candidates">
+      {candidates.map((c) => {
+        const isActive = c.id === selectedId;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            className={`studio__thumb${isActive ? ' studio__thumb--active' : ''}`}
+            onClick={() => onPick(c.id)}
+            title={c.fileName}
+          >
+            <PixelCanvas grid={c.grid} palette={palette} pixelSize={2} />
+            <span className="studio__thumb-label">{c.id}</span>
+          </button>
+        );
+      })}
+    </footer>
   );
 }
