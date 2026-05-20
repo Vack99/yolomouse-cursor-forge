@@ -1,7 +1,7 @@
 // generateFrame — terminal entry point for procedural frame authoring.
 //
 // Usage:
-//   npm --prefix studio run gen-frame -- \
+//   pnpm --dir studio gen-frame \
 //       --project MacRainbow \
 //       --composition path/to/composition.json \
 //       --out frames/frame_00.json

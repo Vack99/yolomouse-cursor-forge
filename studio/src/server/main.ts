@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   if (!fs.existsSync(distDir)) {
     // Fail loud rather than mysteriously serving 404s.
     throw new Error(
-      `studio: dist directory not found at ${distDir}. Run 'npm --prefix studio run build' first.`,
+      `studio: dist directory not found at ${distDir}. Run 'pnpm --dir studio build' first.`,
     );
   }
   const store = createProjectStore({ repoRoot });

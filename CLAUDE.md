@@ -60,6 +60,12 @@ galleries, tweening, and `.ani` integration arrive in later issues.
   Vitest for the deep-module tests. The "no installs" rule from earlier in
   this file is intentionally retired for the `studio/` subtree — the PRD
   documents the tradeoff.
+- **Package manager: `pnpm`. Never `npm`, never `yarn`.** `studio/` uses
+  `pnpm-lock.yaml`; `forge canvas` shells out to `pnpm` for install + build +
+  exec. `package.json` carries `pnpm.onlyBuiltDependencies: ["esbuild"]` so
+  Vite/tsx's native binary is allowed to install while every other package's
+  build scripts stay gated. If you touch the studio toolchain, use
+  `pnpm --dir studio <cmd>` (or `pnpm -C studio <cmd>`) — never `npm install`.
 - JSON pixel-grid schema lives in `studio/src/lib/pixelGrid.ts` (and its
   doc comment): `{ version: 1, width, height, hotspot: {x,y}, pixels: int[][] }`.
   Index 0 is transparent; positive ints index `palette.json`.

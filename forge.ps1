@@ -281,19 +281,19 @@ function Invoke-Canvas {
 
     $node = (Get-Command node -ErrorAction SilentlyContinue)
     if (-not $node) { throw "forge canvas: 'node' not found on PATH. Install Node.js 20+." }
-    $npm = (Get-Command npm -ErrorAction SilentlyContinue)
-    if (-not $npm) { throw "forge canvas: 'npm' not found on PATH." }
+    $pnpm = (Get-Command pnpm -ErrorAction SilentlyContinue)
+    if (-not $pnpm) { throw "forge canvas: 'pnpm' not found on PATH. Install pnpm: https://pnpm.io/installation. This repo never uses npm." }
 
     $nodeModules = Join-Path $studioDir 'node_modules'
     if (-not (Test-Path $nodeModules)) {
-        Write-Host "studio: installing npm dependencies (one-time)…" -ForegroundColor Cyan
-        & $npm.Source --prefix $studioDir install --no-fund --no-audit
-        if ($LASTEXITCODE -ne 0) { throw "forge canvas: npm install failed (exit $LASTEXITCODE)" }
+        Write-Host "studio: installing pnpm dependencies (one-time)…" -ForegroundColor Cyan
+        & $pnpm.Source --dir $studioDir install
+        if ($LASTEXITCODE -ne 0) { throw "forge canvas: pnpm install failed (exit $LASTEXITCODE)" }
     }
     $distDir = Join-Path $studioDir 'dist'
     if (-not (Test-Path (Join-Path $distDir 'index.html'))) {
         Write-Host "studio: building frontend bundle…" -ForegroundColor Cyan
-        & $npm.Source --prefix $studioDir run build
+        & $pnpm.Source --dir $studioDir run build
         if ($LASTEXITCODE -ne 0) { throw "forge canvas: frontend build failed (exit $LASTEXITCODE)" }
     }
 
@@ -309,12 +309,10 @@ function Invoke-Canvas {
     }
 
     Write-Host "studio: launching for project '$Name' at $url (Ctrl+C to stop)" -ForegroundColor Green
-    # Hand off to tsx via npx. This call blocks until the user Ctrl+Cs.
-    # Bind to locals so values interpolate cleanly before npm.ps1's
-    # Invoke-Expression layer sees them.
+    # Hand off to tsx via pnpm exec. This call blocks until the user Ctrl+Cs.
     $repoRootArg = $Script:RepoRoot
     $mainTs      = Join-Path $studioDir 'src\server\main.ts'
-    & $npm.Source --prefix $studioDir exec -- tsx $mainTs --project $Name --repo-root $repoRootArg --port $Port --dist $distDir
+    & $pnpm.Source --dir $studioDir exec tsx $mainTs --project $Name --repo-root $repoRootArg --port $Port --dist $distDir
 }
 
 function Invoke-CanvasSelect {
