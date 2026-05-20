@@ -10,6 +10,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
+import type { Stage } from '../lib/workflowMachine.js';
 
 export interface PaletteEntry {
   index: number;
@@ -32,6 +33,19 @@ export interface Project {
   palette: Palette;
 }
 
+/**
+ * One JSON pixel grid sitting in `projects/<Name>/candidates/<stage>/`.
+ *
+ * `id` is the filename stripped of its `.json` extension — a stable opaque
+ * identifier the workflow reducer uses for `select` actions. `fileName` is
+ * kept alongside so the gallery UI can show it as a label/tooltip.
+ */
+export interface ProjectCandidate {
+  id: string;
+  fileName: string;
+  grid: PixelGrid;
+}
+
 export interface ProjectStore {
   readProject(name: string): Project;
   /**
@@ -44,6 +58,16 @@ export interface ProjectStore {
    * skipped so the picker shows only real projects.
    */
   listProjects(): string[];
+  /**
+   * All candidate grids for one stage of the workflow, sorted by filename.
+   * Returns an empty array when the stage directory has not been created yet
+   * — that is the legitimate "no candidates generated yet" state.
+   *
+   * Errors (invalid project name, malformed JSON) propagate to the caller so
+   * a broken candidate fails loud instead of silently disappearing from the
+   * gallery.
+   */
+  readCandidates(name: string, stage: Stage): ProjectCandidate[];
 }
 
 export interface ProjectStoreOptions {
@@ -108,5 +132,27 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     return names;
   }
 
-  return { readProject, listProjects };
+  function readCandidates(name: string, stage: Stage): ProjectCandidate[] {
+    // Reuses projectDir() so the same path-traversal guard protects this
+    // call site without duplicating the validation regex.
+    const stageDir = path.join(projectDir(name), 'candidates', stage);
+    if (!fs.existsSync(stageDir) || !fs.statSync(stageDir).isDirectory()) {
+      return [];
+    }
+    const files = fs
+      .readdirSync(stageDir)
+      .filter((f) => f.toLowerCase().endsWith('.json'))
+      .sort();
+    return files.map((fileName) => {
+      const full = path.join(stageDir, fileName);
+      const raw = JSON.parse(fs.readFileSync(full, 'utf8'));
+      return {
+        id: fileName.slice(0, -'.json'.length),
+        fileName,
+        grid: parsePixelGrid(raw),
+      };
+    });
+  }
+
+  return { readProject, listProjects, readCandidates };
 }

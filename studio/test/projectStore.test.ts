@@ -162,3 +162,69 @@ describe('projectStore.listProjects', () => {
     expect(store.listProjects()).toEqual([]);
   });
 });
+
+describe('projectStore.readCandidates', () => {
+  const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+
+  it('reads every JSON candidate grid from candidates/first/, sorted by filename', () => {
+    writeProject('Gallery', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_02.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/candidate_01.json': blank,
+    });
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const candidates = store.readCandidates('Gallery', 'first');
+
+    expect(candidates.map((c) => c.id)).toEqual([
+      'candidate_00',
+      'candidate_01',
+      'candidate_02',
+    ]);
+    // Id is the filename without extension — used by the workflow reducer as
+    // an opaque stable identifier.
+    expect(candidates[0]!.fileName).toBe('candidate_00.json');
+    expect(candidates[0]!.grid.width).toBe(1);
+    expect(candidates[0]!.grid.height).toBe(1);
+  });
+
+  it('returns an empty list when the stage directory does not exist yet', () => {
+    writeProject('NoCandidates', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.readCandidates('NoCandidates', 'first')).toEqual([]);
+  });
+
+  it('ignores non-JSON files in the stage directory', () => {
+    writeProject('Mixed', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/notes.txt': 'aaron scribbled this',
+      'candidates/first/.DS_Store': '',
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const candidates = store.readCandidates('Mixed', 'first');
+    expect(candidates.map((c) => c.id)).toEqual(['candidate_00']);
+  });
+
+  it('rejects path-traversal in project name', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.readCandidates('../escape', 'first')).toThrow(/invalid project name/i);
+  });
+
+  it('surfaces parse errors so a malformed candidate fails loudly', () => {
+    writeProject('Broken', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': '{ this is not json',
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.readCandidates('Broken', 'first')).toThrow();
+  });
+});
