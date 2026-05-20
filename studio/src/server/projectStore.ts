@@ -147,6 +147,19 @@ export interface ProjectStore {
    * `lock` / `recipe` ids so a stray edit cannot corrupt the lock markers.
    */
   writeCandidate(name: string, stage: Stage, id: string, grid: PixelGrid): void;
+  /**
+   * Filenames of every reference image under `projects/<Name>/source/`,
+   * sorted lexicographically. The reference panel (issue #16) renders these
+   * for visual comparison while the user designs candidates. Returns an
+   * empty list when the directory does not exist — `source/` is optional.
+   */
+  listSourceImages(name: string): string[];
+  /**
+   * Absolute path to a named reference image. The HTTP layer pipes the
+   * bytes back to the browser; doing the path-validation here keeps the
+   * `source/` directory unreachable to anything but a real listed image.
+   */
+  resolveSourceImagePath(name: string, fileName: string): string;
 }
 
 export interface ProjectStoreOptions {
@@ -155,6 +168,13 @@ export interface ProjectStoreOptions {
 }
 
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Reference-image extensions the panel will surface. JPEG variants are
+// matched case-insensitively because Hinata's source/ already ships .jpg
+// and real reference files often arrive with mixed casing from cameras.
+const SOURCE_IMAGE_EXTS = new Set<string>(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+// Source-image basenames stay flat — no slashes, no `..`, leading char must
+// be a safe one. Matches everything from `hinata-ref.jpg` to `01.PNG`.
+const SOURCE_IMAGE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 // frame files must look like `frame_NN.json` (any number of digits after the
 // underscore — `forge build` already tolerates `frame_000.json` for >100
 // frames). Anchored so a slash or path-traversal segment is rejected.
@@ -415,6 +435,38 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     );
   }
 
+  function listSourceImages(name: string): string[] {
+    const sourceDir = path.join(projectDir(name), 'source');
+    if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+      return [];
+    }
+    const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    const names: string[] = [];
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const ext = path.extname(ent.name).toLowerCase();
+      if (!SOURCE_IMAGE_EXTS.has(ext)) continue;
+      names.push(ent.name);
+    }
+    names.sort();
+    return names;
+  }
+
+  function resolveSourceImagePath(name: string, fileName: string): string {
+    if (!SOURCE_IMAGE_NAME_PATTERN.test(fileName)) {
+      throw new Error(`projectStore: invalid source image name '${fileName}'`);
+    }
+    const ext = path.extname(fileName).toLowerCase();
+    if (!SOURCE_IMAGE_EXTS.has(ext)) {
+      throw new Error(`projectStore: '${fileName}' is not a recognised source image`);
+    }
+    const full = path.join(projectDir(name), 'source', fileName);
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      throw new Error(`projectStore: source image '${fileName}' not found`);
+    }
+    return full;
+  }
+
   return {
     readProject,
     listProjects,
@@ -426,5 +478,7 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     readLock,
     writeFrame,
     writeCandidate,
+    listSourceImages,
+    resolveSourceImagePath,
   };
 }

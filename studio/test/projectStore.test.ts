@@ -813,3 +813,84 @@ describe('projectStore — middle stage', () => {
     ]);
   });
 });
+
+// Reference-image listing — issue #16.
+//
+// The PRD's reference-panel acceptance criterion ("a reference panel lists
+// images from projects/<Name>/source/") needs a deterministic file listing
+// the HTTP layer can serialise. The store does the directory read + name
+// validation here so the HTTP route stays a thin wrapper that only adds
+// MIME / static-file serving.
+
+describe('projectStore.listSourceImages', () => {
+  const palette = { version: 1, colors: [{ index: 0, rgba: '00000000' }] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 1, height: 1 }));
+
+  it('lists every image file from projects/<Name>/source/ sorted by filename', () => {
+    writeProject('Refs', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const sourceDir = path.join(tmpRoot, 'projects', 'Refs', 'source');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    // Real cursor projects mix screenshots and photos — accept both.
+    fs.writeFileSync(path.join(sourceDir, 'beta.png'), 'png-bytes', 'utf8');
+    fs.writeFileSync(path.join(sourceDir, 'alpha.jpg'), 'jpg-bytes', 'utf8');
+    fs.writeFileSync(path.join(sourceDir, 'gamma.JPEG'), 'jpeg-bytes', 'utf8');
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listSourceImages('Refs')).toEqual(['alpha.jpg', 'beta.png', 'gamma.JPEG']);
+  });
+
+  it('returns an empty list when source/ does not exist', () => {
+    writeProject('NoSource', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listSourceImages('NoSource')).toEqual([]);
+  });
+
+  it('ignores non-image files and subdirectories', () => {
+    writeProject('Mixed', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const sourceDir = path.join(tmpRoot, 'projects', 'Mixed', 'source');
+    fs.mkdirSync(path.join(sourceDir, 'inner'), { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'ref.png'), 'png-bytes', 'utf8');
+    // Notes / READMEs sometimes live alongside reference images; they are
+    // not images so the panel ignores them.
+    fs.writeFileSync(path.join(sourceDir, 'notes.md'), '# refs', 'utf8');
+    // A nested directory must not surface as if it were a file.
+    fs.writeFileSync(path.join(sourceDir, 'inner', 'nested.png'), 'png-bytes', 'utf8');
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.listSourceImages('Mixed')).toEqual(['ref.png']);
+  });
+
+  it('rejects path-traversal in the project name', () => {
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.listSourceImages('../escape')).toThrow(/invalid project name/i);
+  });
+
+  it('resolveSourceImagePath returns the absolute path for a listed image', () => {
+    writeProject('Resolve', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const sourceDir = path.join(tmpRoot, 'projects', 'Resolve', 'source');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'pic.png'), 'png-bytes', 'utf8');
+
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.resolveSourceImagePath('Resolve', 'pic.png')).toBe(
+      path.join(sourceDir, 'pic.png'),
+    );
+  });
+
+  it('resolveSourceImagePath rejects path-traversal in the file name', () => {
+    writeProject('Resolve2', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    // A bug in the HTTP routing must not be able to escape the source/
+    // directory via `..` or a slash.
+    expect(() => store.resolveSourceImagePath('Resolve2', '../escape.png')).toThrow(
+      /source image/i,
+    );
+    expect(() => store.resolveSourceImagePath('Resolve2', 'a/b.png')).toThrow(/source image/i);
+  });
+
+  it('resolveSourceImagePath rejects an unknown image', () => {
+    writeProject('Resolve3', { 'palette.json': palette, 'frames/frame_00.json': blank });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(() => store.resolveSourceImagePath('Resolve3', 'missing.png')).toThrow(/not found/i);
+  });
+});
