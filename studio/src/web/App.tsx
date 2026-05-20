@@ -3,6 +3,8 @@ import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
 import {
   createWorkflowState,
   reduceWorkflow,
+  type LockedFrame,
+  type Recipe,
   type WorkflowAction,
   type WorkflowState,
 } from '../lib/workflowMachine.js';
@@ -39,6 +41,8 @@ interface CandidatePayload {
 interface CandidatesResponse {
   stage: 'first';
   candidates: CandidatePayload[];
+  /** Lock marker — present iff the stage has been locked on disk. */
+  lock?: { candidateId: string; recipe: Recipe };
 }
 
 interface LoadedCandidate {
@@ -56,6 +60,8 @@ interface LoadedProject {
    * has not yet had any candidate JSON generated.
    */
   firstCandidates: LoadedCandidate[];
+  /** First-stage lock marker; undefined when the stage is unlocked. */
+  firstLock: LockedFrame | undefined;
 }
 
 type State =
@@ -91,7 +97,23 @@ async function loadActiveProject(): Promise<LoadedProject> {
       fileName: c.fileName,
       grid: parsePixelGrid(c.grid),
     })),
+    firstLock:
+      candPayload.lock !== undefined
+        ? { id: candPayload.lock.candidateId, recipe: candPayload.lock.recipe }
+        : undefined,
   };
+}
+
+async function postLock(projectName: string, candidateId: string): Promise<void> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/lock`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ stage: 'first', candidateId }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
 }
 
 async function loadProjects(): Promise<string[]> {
@@ -139,6 +161,7 @@ export function App(): JSX.Element {
           type: 'candidates-loaded',
           stage: 'first',
           ids: project.firstCandidates.map((c) => c.id),
+          ...(project.firstLock !== undefined ? { locked: project.firstLock } : {}),
         });
       })
       .catch((err: unknown) => {
@@ -160,6 +183,7 @@ export function App(): JSX.Element {
           type: 'candidates-loaded',
           stage: 'first',
           ids: project.firstCandidates.map((c) => c.id),
+          ...(project.firstLock !== undefined ? { locked: project.firstLock } : {}),
         });
       })
       .catch((err: unknown) => {
@@ -200,9 +224,33 @@ export function App(): JSX.Element {
     [state],
   );
 
-  const onPickCandidate = useCallback((id: string): void => {
-    dispatchWorkflow({ type: 'select', stage: 'first', id });
-  }, []);
+  const onPickCandidate = useCallback(
+    (id: string): void => {
+      // The reducer rejects selects on a locked stage; mirror that here so
+      // a stray click cannot put the UI in an error state.
+      if (workflow.locked.first !== undefined) return;
+      dispatchWorkflow({ type: 'select', stage: 'first', id });
+    },
+    [workflow.locked.first],
+  );
+
+  const onLock = useCallback(
+    (candidateId: string): void => {
+      if (state.status !== 'ready') return;
+      postLock(state.project.name, candidateId).catch((err: unknown) => {
+        setState({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+      // The watcher fires reload events for lock.json / recipe.json /
+      // frames/frame_00.json which trigger refresh() over the WebSocket;
+      // refresh re-dispatches candidates-loaded with the locked payload so
+      // the reducer's view of the world matches disk. No optimistic
+      // update — the filesystem stays the single source of truth.
+    },
+    [state],
+  );
 
   if (state.status === 'loading') {
     return (
@@ -244,6 +292,14 @@ export function App(): JSX.Element {
   const showCandidates = project.firstCandidates.length > 0 && selectedCandidate !== undefined;
   const mainGrid = showCandidates ? selectedCandidate!.grid : project.frames[0]!.grid;
   const mainLabel = showCandidates ? selectedCandidate!.fileName : project.frames[0]!.fileName;
+  // The Lock action only appears in the first stage, only when a candidate
+  // is selected, and only while the stage is unlocked. After the lock the
+  // button collapses to a static "Locked" badge so the gallery still tells
+  // the user which candidate became the canonical frame.
+  const firstLock = workflow.locked.first;
+  const isFirstStage = workflow.stage === 'first';
+  const canLock =
+    isFirstStage && firstLock === undefined && showCandidates && selectedCandidate !== undefined;
 
   return (
     <div className="studio">
@@ -254,6 +310,22 @@ export function App(): JSX.Element {
           {mainGrid.width}×{mainGrid.height} · hotspot ({mainGrid.hotspot.x},{mainGrid.hotspot.y}) ·{' '}
           {mainLabel}
         </span>
+        <span className="studio__stage-badge" aria-label={`Workflow stage: ${workflow.stage}`}>
+          Stage: {workflow.stage}
+        </span>
+        {canLock ? (
+          <button
+            type="button"
+            className="studio__lock"
+            onClick={() => onLock(selectedCandidate!.id)}
+          >
+            Lock this candidate
+          </button>
+        ) : firstLock !== undefined ? (
+          <span className="studio__lock studio__lock--locked" aria-label="First frame locked">
+            Locked: {firstLock.id}
+          </span>
+        ) : null}
       </header>
       <main className="studio__stage">
         <div className="studio__canvas-wrap">
@@ -265,6 +337,7 @@ export function App(): JSX.Element {
           candidates={project.firstCandidates}
           palette={project.palette}
           selectedId={selectedCandidate!.id}
+          lockedId={firstLock?.id}
           onPick={onPickCandidate}
         />
       ) : null}
@@ -310,33 +383,54 @@ interface CandidateStripProps {
   candidates: LoadedCandidate[];
   palette: Palette;
   selectedId: string;
+  /** Id of the locked candidate, if any. Renders a lock indicator on that thumbnail. */
+  lockedId: string | undefined;
   onPick: (id: string) => void;
 }
 
 /**
  * Bottom thumbnail strip — one button per candidate. The selected one is
  * highlighted so the user always knows which thumbnail the main view is
- * mirroring. Each thumbnail is the same PixelCanvas component the main view
+ * mirroring. The locked one (if any) gets a visible lock indicator so it
+ * stays distinguishable even when another candidate is selected for
+ * browsing. Each thumbnail is the same PixelCanvas component the main view
  * uses, just shrunk; that keeps the pixel-grid overlay and hotspot
  * crosshair visible at thumbnail scale.
  */
-function CandidateStrip({ candidates, palette, selectedId, onPick }: CandidateStripProps): JSX.Element {
+function CandidateStrip({
+  candidates,
+  palette,
+  selectedId,
+  lockedId,
+  onPick,
+}: CandidateStripProps): JSX.Element {
   return (
     <footer className="studio__strip" role="tablist" aria-label="First-frame candidates">
       {candidates.map((c) => {
         const isActive = c.id === selectedId;
+        const isLocked = c.id === lockedId;
+        const classes = [
+          'studio__thumb',
+          isActive ? 'studio__thumb--active' : '',
+          isLocked ? 'studio__thumb--locked' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
         return (
           <button
             key={c.id}
             type="button"
             role="tab"
             aria-selected={isActive}
-            className={`studio__thumb${isActive ? ' studio__thumb--active' : ''}`}
+            className={classes}
             onClick={() => onPick(c.id)}
-            title={c.fileName}
+            title={isLocked ? `${c.fileName} (locked)` : c.fileName}
           >
             <PixelCanvas grid={c.grid} palette={palette} pixelSize={2} />
-            <span className="studio__thumb-label">{c.id}</span>
+            <span className="studio__thumb-label">
+              {isLocked ? '\u{1F512} ' : ''}
+              {c.id}
+            </span>
           </button>
         );
       })}

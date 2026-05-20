@@ -167,6 +167,68 @@ body {
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
+.studio__thumb--locked {
+  /* Locked candidate stands out even when another is selected — a soft
+     teal glow + dashed border are visible at every scale the strip ever
+     uses, without competing with the active-selection accent. */
+  border-color: #5fd0c5;
+  border-style: dashed;
+  box-shadow: 0 0 0 1px rgba(95, 208, 197, 0.35) inset;
+}
+
+.studio__thumb--locked.studio__thumb--active {
+  /* When the locked candidate is also the actively-browsed one, keep
+     both signals: accent border with a thin teal halo around it. */
+  border-color: var(--accent);
+  border-style: solid;
+  box-shadow:
+    0 0 0 1px var(--accent) inset,
+    0 0 0 3px rgba(95, 208, 197, 0.35);
+}
+
 .studio__thumb-label {
   letter-spacing: 0.02em;
+}
+
+.studio__stage-badge {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.studio__lock {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.studio__lock:hover {
+  background: rgba(255, 184, 107, 0.12);
+}
+
+.studio__lock:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.studio__lock--locked {
+  cursor: default;
+  border-color: #5fd0c5;
+  color: #5fd0c5;
+  background: rgba(95, 208, 197, 0.06);
+}
+
+.studio__lock--locked:hover {
+  background: rgba(95, 208, 197, 0.06);
 }
