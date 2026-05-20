@@ -9,8 +9,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
-import type { Stage } from '../lib/workflowMachine.js';
+import { parsePixelGrid, serializePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
+import type { Recipe, Stage } from '../lib/workflowMachine.js';
 
 export interface PaletteEntry {
   index: number;
@@ -46,6 +46,19 @@ export interface ProjectCandidate {
   grid: PixelGrid;
 }
 
+/** Persisted record describing which candidate was locked for a stage. */
+export interface LockMarker {
+  candidateId: string;
+  recipe: Recipe;
+}
+
+/** Arguments to `writeLock` — the candidate being frozen and its derived recipe. */
+export interface WriteLockArgs {
+  candidateId: string;
+  grid: PixelGrid;
+  recipe: Recipe;
+}
+
 export interface ProjectStore {
   readProject(name: string): Project;
   /**
@@ -63,11 +76,34 @@ export interface ProjectStore {
    * Returns an empty array when the stage directory has not been created yet
    * — that is the legitimate "no candidates generated yet" state.
    *
+   * The reserved files `lock.json` and `recipe.json` are excluded — they
+   * are lock-stage metadata, not candidates.
+   *
    * Errors (invalid project name, malformed JSON) propagate to the caller so
    * a broken candidate fails loud instead of silently disappearing from the
    * gallery.
    */
   readCandidates(name: string, stage: Stage): ProjectCandidate[];
+  /**
+   * Lock a candidate as the canonical frame for a stage. Writes three
+   * files atomically (from the caller's point of view):
+   *   - `candidates/<stage>/lock.json` — pointer to the locked candidate id.
+   *   - `candidates/<stage>/recipe.json` — composition recipe metadata.
+   *   - `frames/frame_NN.json` — the candidate's grid frozen as the
+   *     canonical frame for the stage.
+   *
+   * Throws if the candidate id is not on disk, if the project name is
+   * invalid, or if the stage is already locked (PRD: locking is one-shot
+   * per stage — only manual pixel edits to the frozen grid are allowed
+   * after).
+   */
+  writeLock(name: string, stage: Stage, args: WriteLockArgs): void;
+  /**
+   * Read the lock marker for a stage. Returns undefined when no lock has
+   * been written yet — that is the unlocked state. Returns
+   * `{ candidateId, recipe }` once both marker files are present.
+   */
+  readLock(name: string, stage: Stage): LockMarker | undefined;
 }
 
 export interface ProjectStoreOptions {
@@ -76,6 +112,26 @@ export interface ProjectStoreOptions {
 }
 
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// Reserved files inside candidates/<stage>/. They live next to the candidate
+// JSON files but are not themselves candidates — they describe the lock
+// state for the stage.
+const LOCK_MARKER_FILE = 'lock.json';
+const RECIPE_FILE = 'recipe.json';
+const STAGE_RESERVED_FILES = new Set<string>([LOCK_MARKER_FILE, RECIPE_FILE]);
+
+/**
+ * Filename of the canonical frame produced by locking `stage`. Only `first`
+ * is wired today (#12); later issues add middle (#15 → frame_NN where NN is
+ * the middle index) and last (#17 → final frame index). Until the workflow
+ * knows the chosen frame count, the middle/last positions are placeholders
+ * that get rewritten by the tween step (#18) — `first` is the only stage
+ * with a fixed canonical position right now.
+ */
+const STAGE_FRAME_FILE: { readonly [S in Stage]: string | undefined } = {
+  first: 'frame_00.json',
+  middle: undefined,
+};
 
 export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectStore {
   function projectDir(name: string): string {
@@ -142,6 +198,8 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     const files = fs
       .readdirSync(stageDir)
       .filter((f) => f.toLowerCase().endsWith('.json'))
+      // lock.json / recipe.json sit beside candidates but are not candidates.
+      .filter((f) => !STAGE_RESERVED_FILES.has(f.toLowerCase()))
       .sort();
     return files.map((fileName) => {
       const full = path.join(stageDir, fileName);
@@ -154,5 +212,56 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     });
   }
 
-  return { readProject, listProjects, readCandidates };
+  function writeLock(name: string, stage: Stage, args: WriteLockArgs): void {
+    const dir = projectDir(name);
+    const stageDir = path.join(dir, 'candidates', stage);
+    const candidatePath = path.join(stageDir, `${args.candidateId}.json`);
+    if (!fs.existsSync(candidatePath)) {
+      throw new Error(
+        `projectStore: cannot lock '${args.candidateId}' — no such candidate at ${candidatePath}`,
+      );
+    }
+    const lockPath = path.join(stageDir, LOCK_MARKER_FILE);
+    if (fs.existsSync(lockPath)) {
+      throw new Error(`projectStore: stage '${stage}' is already locked at ${lockPath}`);
+    }
+    const frameFile = STAGE_FRAME_FILE[stage];
+    if (frameFile === undefined) {
+      // Defensive: keep the error surface narrow until later issues wire
+      // middle/last canonical positions.
+      throw new Error(`projectStore: stage '${stage}' has no canonical frame slot yet`);
+    }
+    const framesDir = path.join(dir, 'frames');
+    fs.mkdirSync(framesDir, { recursive: true });
+
+    // Marker first — once it lands, downstream readers see the stage as
+    // locked. The frame freeze + recipe write follow; the
+    // already-locked guard above means a half-finished previous lock is
+    // impossible.
+    const marker: LockMarker = { candidateId: args.candidateId, recipe: args.recipe };
+    fs.writeFileSync(lockPath, JSON.stringify(marker, null, 2), 'utf8');
+    fs.writeFileSync(
+      path.join(stageDir, RECIPE_FILE),
+      JSON.stringify(args.recipe, null, 2),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(framesDir, frameFile),
+      JSON.stringify(serializePixelGrid(args.grid), null, 2),
+      'utf8',
+    );
+  }
+
+  function readLock(name: string, stage: Stage): LockMarker | undefined {
+    const stageDir = path.join(projectDir(name), 'candidates', stage);
+    const lockPath = path.join(stageDir, LOCK_MARKER_FILE);
+    if (!fs.existsSync(lockPath)) return undefined;
+    const raw = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as Partial<LockMarker>;
+    if (typeof raw.candidateId !== 'string' || raw.recipe === undefined) {
+      throw new Error(`projectStore: malformed lock marker at ${lockPath}`);
+    }
+    return { candidateId: raw.candidateId, recipe: raw.recipe as Recipe };
+  }
+
+  return { readProject, listProjects, readCandidates, writeLock, readLock };
 }
