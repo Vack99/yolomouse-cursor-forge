@@ -37,6 +37,7 @@ Usage: .\forge.ps1 <verb> [args]
   build    <Name>                                Compile grids -> .ani + previews
   canvas   <Name> [-Port 5174] [-NoBrowser]      Launch Cursor Studio in the browser
   canvas-select <Name> [-Port 5174]              Switch a running Cursor Studio to <Name>
+  canvas-stage [-Port 5174]                      Print the active project + stage (where 'generate more' would land)
   preview  <Name>                                Open preview.gif and preview_strip.png
   install  <Name>                                Copy bundle into YoloMouse\Cursors\<Name>
   uninstall <Name> [-Force]                      Remove bundle from YoloMouse
@@ -336,6 +337,24 @@ function Invoke-CanvasSelect {
     Write-Host "studio: active project is now '$($resp.name)'" -ForegroundColor Green
 }
 
+function Invoke-CanvasStage {
+    param([int]$Port = 5174)
+    # Hits the running studio server's GET /api/active-stage endpoint so
+    # Claude can ask where a "generate 4 more candidates" call would land
+    # before authoring more frames. Pure read — no state mutated.
+    $uri = "http://127.0.0.1:$Port/api/active-stage"
+    try {
+        $resp = Invoke-RestMethod -Uri $uri -Method Get
+    } catch {
+        throw "forge canvas-stage: could not reach studio at $uri - is 'forge canvas' running? ($($_.Exception.Message))"
+    }
+    # Two-line output: human readable header + a machine-parseable
+    # 'project=<x> stage=<y>' line so scripts (and Claude's grep) can
+    # consume it without an extra JSON parse.
+    Write-Host "studio: active project '$($resp.project)' is in stage '$($resp.stage)'" -ForegroundColor Green
+    Write-Output ("project={0} stage={1}" -f $resp.project, $resp.stage)
+}
+
 switch ($Verb) {
     'reload' { Invoke-Reload; exit 0 }
     'install' {
@@ -369,6 +388,11 @@ switch ($Verb) {
         if (-not $Name) { throw 'forge canvas-select: <Name> is required' }
         $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
         Invoke-CanvasSelect -Name $Name -Port $p
+        exit 0
+    }
+    'canvas-stage' {
+        $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
+        Invoke-CanvasStage -Port $p
         exit 0
     }
     'new' {
