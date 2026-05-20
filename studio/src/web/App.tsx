@@ -4,6 +4,7 @@ import {
   createWorkflowState,
   reduceWorkflow,
   type LockedFrame,
+  type Phase,
   type Recipe,
   type Stage,
   type WorkflowAction,
@@ -16,9 +17,20 @@ import { useReloadChannel } from './useReloadChannel.js';
 /**
  * Workflow stages currently wired through the HTTP surface. Mirrors the
  * server's WIRED_STAGES — kept in lock-step manually because the frontend
- * bundle does not import server code. The `last` stage joins with #17.
+ * bundle does not import server code. All three keyframe stages are wired
+ * as of #17; the post-keyframes `'tween-ready'` phase is not a UI stage
+ * (no candidate gallery to render), only a reducer phase value.
  */
-const UI_STAGES: ReadonlyArray<Stage> = ['first', 'middle'];
+const UI_STAGES: ReadonlyArray<Stage> = ['first', 'middle', 'last'];
+
+/**
+ * Narrow a workflow phase to one of the keyframe stages. Returns false for
+ * the post-keyframes `'tween-ready'` sentinel — that phase has no gallery
+ * surface, so callers fall back to the last keyframe stage when clamping.
+ */
+function isStage(p: Phase): p is Stage {
+  return UI_STAGES.includes(p as Stage);
+}
 
 interface PaletteEntry {
   index: number;
@@ -326,10 +338,11 @@ export function App(): JSX.Element {
   );
 
   // The "active" stage for UI purposes is the reducer's current stage when
-  // it is wired (`first`/`middle`). If the reducer has advanced past the
-  // wired surface (`last` arriving with #17), the gallery clamps to the
-  // last wired stage so the user is not stuck on a blank screen.
-  const activeStage: Stage = UI_STAGES.includes(workflow.stage)
+  // it is one of the keyframe stages. Once the reducer enters the
+  // post-keyframes `'tween-ready'` phase (after #17's last-stage lock),
+  // the gallery clamps to the last keyframe stage so the user keeps seeing
+  // the frozen last-frame candidate they just approved — no blank screen.
+  const activeStage: Stage = isStage(workflow.stage)
     ? workflow.stage
     : UI_STAGES[UI_STAGES.length - 1]!;
 
