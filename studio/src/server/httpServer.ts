@@ -44,6 +44,12 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  // Reference-image extensions served by /api/projects/:name/source/:file.
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
 };
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -315,6 +321,41 @@ export function createApp(opts: ServerOptions): http.RequestListener {
             const grid = parsePixelGrid(body.grid);
             store.writeCandidate(requested, stage, id, grid);
             sendJson(res, 200, { ok: true });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // GET /api/projects/:name/source -> { images: [name, ...] }
+        // Reference panel (issue #16) listing endpoint. Empty array when the
+        // project has no source/ directory — `source/` is optional.
+        const sourceListMatch = /^\/api\/projects\/([^/]+)\/source$/.exec(pathname);
+        if (sourceListMatch && req.method === 'GET') {
+          const requested = decodeURIComponent(sourceListMatch[1]!);
+          try {
+            sendJson(res, 200, { images: store.listSourceImages(requested) });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
+        // GET /api/projects/:name/source/:fileName -> raw image bytes
+        // Static-bytes endpoint for the reference panel. Delegates path
+        // validation + lookup to projectStore so the route only adds MIME
+        // negotiation and byte streaming.
+        const sourceFileMatch = /^\/api\/projects\/([^/]+)\/source\/([^/]+)$/.exec(pathname);
+        if (sourceFileMatch && req.method === 'GET') {
+          const requested = decodeURIComponent(sourceFileMatch[1]!);
+          const fileName = decodeURIComponent(sourceFileMatch[2]!);
+          try {
+            const full = store.resolveSourceImagePath(requested, fileName);
+            sendStatic(res, full);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const status = /not found/i.test(msg) ? 404 : 400;

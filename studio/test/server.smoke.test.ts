@@ -500,4 +500,113 @@ describe('http server (smoke)', () => {
     });
     expect(put.status).toBe(400);
   });
+
+  // Reference panel — issue #16.
+  //
+  // The panel needs (a) a listing endpoint so the frontend can enumerate
+  // what to render, and (b) a static-bytes endpoint so the browser can
+  // <img src> each image. Both delegate to projectStore so the route is
+  // pure URL routing + content-type negotiation.
+
+  it('GET /api/projects/:name/source lists every reference image in source/', async () => {
+    writeProject('Refs');
+    const sourceDir = path.join(tmpRoot, 'projects', 'Refs', 'source');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'beta.png'), 'png-bytes', 'utf8');
+    fs.writeFileSync(path.join(sourceDir, 'alpha.jpg'), 'jpg-bytes', 'utf8');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Refs');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/Refs/source`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { images: string[] };
+    expect(body.images).toEqual(['alpha.jpg', 'beta.png']);
+  });
+
+  it('GET /api/projects/:name/source returns an empty list when source/ is absent', async () => {
+    writeProject('NoRefs');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'NoRefs');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/NoRefs/source`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ images: [] });
+  });
+
+  it('GET /api/projects/:name/source/:fileName streams the image bytes with a content-type header', async () => {
+    writeProject('RefBytes');
+    const sourceDir = path.join(tmpRoot, 'projects', 'RefBytes', 'source');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    // A handful of bytes is enough — the route just pipes whatever fs reads.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    fs.writeFileSync(path.join(sourceDir, 'pic.png'), png);
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'RefBytes');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/RefBytes/source/pic.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.equals(png)).toBe(true);
+  });
+
+  it('GET /api/projects/:name/source/:fileName rejects path-traversal', async () => {
+    writeProject('RefTraversal');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'RefTraversal');
+    server = await startServer({ store, session, distDir });
+
+    // `..%2F` would otherwise climb out of source/; the routing must refuse.
+    const res = await fetch(`${server.url}api/projects/RefTraversal/source/${encodeURIComponent('../escape.png')}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /api/projects/:name/source/:fileName 404s for an unknown image', async () => {
+    writeProject('RefMissing');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'RefMissing');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/RefMissing/source/missing.png`);
+    expect(res.status).toBe(404);
+  });
+
+  // Hotspot persistence — issue #16.
+  //
+  // Dragging the crosshair updates the hotspot only; the pixel data does
+  // not change. The frame and candidate PUT routes already accept a full
+  // grid payload, so the simplest write path is to send the same grid back
+  // with a new hotspot. This smoke check exercises that round-trip end to
+  // end so we know the JSON serialised by setHotspot survives parsePixelGrid
+  // on the way in and stays put on disk.
+
+  it('PUT /api/projects/:name/frames/:fileName persists a hotspot change', async () => {
+    writeProject('Hotspot');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'Hotspot');
+    server = await startServer({ store, session, distDir });
+
+    const original = setPixel(createPixelGrid({ width: 2, height: 2, hotspot: { x: 0, y: 1 } }), 1, 0, 2);
+    const moved = { ...serializePixelGrid(original), hotspot: { x: 1, y: 1 } };
+    const put = await fetch(`${server.url}api/projects/Hotspot/frames/frame_00.json`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: moved }),
+    });
+    expect(put.status).toBe(200);
+
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, 'projects', 'Hotspot', 'frames', 'frame_00.json'), 'utf8'),
+    );
+    expect(raw.hotspot).toEqual({ x: 1, y: 1 });
+    // Pixel data was preserved on the wire — the editor sends the whole grid
+    // so the hotspot move never silently wipes art.
+    expect(raw.pixels).toEqual([
+      [0, 2],
+      [0, 0],
+    ]);
+  });
 });
