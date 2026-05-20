@@ -375,6 +375,35 @@ export function App(): JSX.Element {
     [state],
   );
 
+  // Editing-target persistence sink. Declared here (before any early
+  // returns) so the hook count is stable across loading / error / ready
+  // renders — React's rules-of-hooks crashes the tree otherwise (manifests
+  // as a black screen on the first ready-state transition). The callback
+  // computes its captures from `state` at call time, so it no-ops cleanly
+  // when the project isn't loaded yet.
+  const onPersist = useCallback(
+    (next: PixelGrid): void => {
+      if (state.status !== 'ready') return;
+      const project = state.project;
+      const stageData = project.stages[activeStage];
+      const stageCandidates = stageData.candidates;
+      const selectedCandidate =
+        stageCandidates.find((c) => c.id === workflow.selected[activeStage]) ??
+        stageCandidates[0];
+      const showCandidates = stageCandidates.length > 0 && selectedCandidate !== undefined;
+      const writer = showCandidates
+        ? putCandidate(project.name, activeStage, selectedCandidate!.id, next)
+        : putFrame(project.name, project.frames[0]!.fileName, next);
+      writer.catch((err: unknown) => {
+        setState({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    },
+    [state, activeStage, workflow.selected],
+  );
+
   if (state.status === 'loading') {
     return (
       <div className="studio">
@@ -441,21 +470,8 @@ export function App(): JSX.Element {
   // a canonical frame slot, so editing the candidate after that point still
   // writes to candidates/<stage>/<id>.json — that is the manual edit
   // surface; the recipe never overwrites it (PRD acceptance criterion 6).
-  const onPersist = useCallback(
-    (next: PixelGrid): void => {
-      const projectName = project.name;
-      const writer = showCandidates
-        ? putCandidate(projectName, activeStage, selectedCandidate!.id, next)
-        : putFrame(projectName, mainFrameFile, next);
-      writer.catch((err: unknown) => {
-        setState({
-          status: 'error',
-          message: err instanceof Error ? err.message : String(err),
-        });
-      });
-    },
-    [project.name, showCandidates, selectedCandidate, mainFrameFile, activeStage],
-  );
+  // The `onPersist` callback itself is declared above the early returns so
+  // hook order stays stable across loading / error / ready renders.
   // The Lock action appears on the active stage when a candidate is
   // selected and the stage is unlocked. Past stages' lock indicators stay
   // visible alongside so the user sees the full chain of approved
