@@ -14,7 +14,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Stage } from '../lib/workflowMachine.js';
+import { STAGES, type Stage } from '../lib/workflowMachine.js';
 
 export type ReloadEvent =
   | { kind: 'frame'; fileName: string }
@@ -43,7 +43,10 @@ export interface ProjectWatcherOptions {
 const FRAME_EXT = '.json';
 const PALETTE_FILE = 'palette.json';
 const CANDIDATES_DIR = 'candidates';
-const KNOWN_STAGES: ReadonlyArray<Stage> = ['first'];
+// Watch every workflow stage's candidate directory — STAGES is the single
+// source of truth in the workflow machine, so adding a stage there
+// automatically extends the watcher's coverage.
+const KNOWN_STAGES: ReadonlyArray<Stage> = STAGES;
 
 export function createProjectWatcher(opts: ProjectWatcherOptions): ProjectWatcher {
   const { projectDir } = opts;
