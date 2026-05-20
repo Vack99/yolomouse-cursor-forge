@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   createWorkflowState,
+  extractRecipe,
   reduceWorkflow,
+  type Recipe,
   type WorkflowState,
 } from '../src/lib/workflowMachine.js';
+import { createPixelGrid, setPixel, type PixelGrid } from '../src/lib/pixelGrid.js';
 
 // Workflow state machine — pure reducer for the candidate-gallery workflow.
 //
@@ -127,6 +130,180 @@ describe('workflowMachine — select', () => {
     const s = createWorkflowState();
     expect(() =>
       reduceWorkflow(s, { type: 'select', stage: 'first', id: 'candidate_00' }),
+    ).toThrow(/not in candidate set/i);
+  });
+});
+
+// Issue #12 — locking the first frame.
+//
+// `lock` is the transition that ends the first stage. Once an id is locked
+// the reducer:
+//   - advances `stage` to 'middle';
+//   - records `{ id, recipe }` in `locked.first`;
+//   - rejects further first-stage actions (select / candidates-loaded / lock)
+//     so the locked grid stays the truth for the frame.
+// `extractRecipe(grid)` is the helper that derives a composition recipe from
+// a grid; glue code calls it and hands the result into the `lock` action.
+
+function gridWithPixels(): PixelGrid {
+  let g = createPixelGrid({ width: 3, height: 3, hotspot: { x: 1, y: 1 } });
+  g = setPixel(g, 0, 0, 2);
+  g = setPixel(g, 1, 0, 2);
+  g = setPixel(g, 2, 1, 5);
+  return g;
+}
+
+describe('extractRecipe', () => {
+  it('captures palette indices in use, proportions, hotspot, and filled-cell count', () => {
+    const g = gridWithPixels();
+    const r = extractRecipe(g);
+    expect(r.width).toBe(3);
+    expect(r.height).toBe(3);
+    expect(r.hotspot).toEqual({ x: 1, y: 1 });
+    // Palette indices are sorted, ascending, and exclude index 0 (transparent).
+    expect(r.paletteIndices).toEqual([2, 5]);
+    expect(r.filledCells).toBe(3);
+  });
+
+  it('returns an empty palette and zero filled cells for a transparent grid', () => {
+    const g = createPixelGrid({ width: 2, height: 2 });
+    const r = extractRecipe(g);
+    expect(r.paletteIndices).toEqual([]);
+    expect(r.filledCells).toBe(0);
+  });
+});
+
+describe('workflowMachine — lock', () => {
+  function preload(): WorkflowState {
+    return reduceWorkflow(createWorkflowState(), {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00', 'candidate_01', 'candidate_02'],
+    });
+  }
+
+  const sampleRecipe: Recipe = extractRecipe(gridWithPixels());
+
+  it('advances the stage to middle and records the locked id + recipe', () => {
+    let s: WorkflowState = preload();
+    s = reduceWorkflow(s, { type: 'select', stage: 'first', id: 'candidate_01' });
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'first',
+      id: 'candidate_01',
+      recipe: sampleRecipe,
+    });
+    expect(s.stage).toBe('middle');
+    expect(s.locked.first).toEqual({ id: 'candidate_01', recipe: sampleRecipe });
+    // The candidate set stays on disk and browsable — the gallery still has
+    // every candidate after the lock (PRD: "nothing discarded").
+    expect(s.candidates.first).toEqual(['candidate_00', 'candidate_01', 'candidate_02']);
+  });
+
+  it('rejects locking an id that is not in the candidate set', () => {
+    const s = preload();
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'first',
+        id: 'candidate_99',
+        recipe: sampleRecipe,
+      }),
+    ).toThrow(/not in candidate set/i);
+  });
+
+  it('rejects a second lock on the same stage', () => {
+    let s: WorkflowState = preload();
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'first',
+      id: 'candidate_00',
+      recipe: sampleRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'first',
+        id: 'candidate_01',
+        recipe: sampleRecipe,
+      }),
+    ).toThrow(/already locked/i);
+  });
+
+  it('rejects further first-stage select transitions once locked', () => {
+    let s: WorkflowState = preload();
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'first',
+      id: 'candidate_00',
+      recipe: sampleRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, { type: 'select', stage: 'first', id: 'candidate_01' }),
+    ).toThrow(/locked/i);
+  });
+
+  it('rejects further first-stage candidates-loaded transitions once locked', () => {
+    let s: WorkflowState = preload();
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'first',
+      id: 'candidate_00',
+      recipe: sampleRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'candidates-loaded',
+        stage: 'first',
+        ids: ['candidate_00', 'candidate_01', 'candidate_02', 'candidate_03'],
+      }),
+    ).toThrow(/locked/i);
+  });
+
+  it('does not mutate the input state (purity)', () => {
+    const s = preload();
+    const before = JSON.stringify(s);
+    reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'first',
+      id: 'candidate_00',
+      recipe: sampleRecipe,
+    });
+    expect(JSON.stringify(s)).toBe(before);
+  });
+});
+
+// candidates-loaded carries an optional `locked` field so the reducer's
+// state can be rehydrated from disk on page reload. This matters because
+// the filesystem is the single source of truth — closing the tab and
+// re-opening it must restore the locked stage, not drop back to `first`.
+
+describe('workflowMachine — candidates-loaded with lock metadata', () => {
+  const sampleRecipe: Recipe = extractRecipe(gridWithPixels());
+
+  it('rehydrates the locked stage from disk and starts on middle', () => {
+    const s = reduceWorkflow(createWorkflowState(), {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_00', recipe: sampleRecipe },
+    });
+    expect(s.stage).toBe('middle');
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: sampleRecipe });
+    expect(s.candidates.first).toEqual(['candidate_00', 'candidate_01']);
+    // The locked candidate is the auto-selected one — the gallery shows the
+    // frozen frame large by default.
+    expect(s.selected.first).toBe('candidate_00');
+  });
+
+  it('rejects a locked id that is not present in the candidate set', () => {
+    expect(() =>
+      reduceWorkflow(createWorkflowState(), {
+        type: 'candidates-loaded',
+        stage: 'first',
+        ids: ['candidate_00'],
+        locked: { id: 'candidate_99', recipe: sampleRecipe },
+      }),
     ).toThrow(/not in candidate set/i);
   });
 });
