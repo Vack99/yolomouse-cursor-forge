@@ -83,6 +83,29 @@ export function setPixel(grid: PixelGrid, x: number, y: number, paletteIndex: nu
   return { ...grid, pixels: nextRows };
 }
 
+/**
+ * Return a new grid with the hotspot relocated to `hotspot`. Pure update;
+ * the pixel array is shared with the input — only `hotspot` differs. Used
+ * by the draggable hotspot crosshair (issue #16); rejecting out-of-bounds
+ * coordinates keeps the persisted hotspot inside the frame so downstream
+ * `.ani` writers never see a hotspot they would refuse.
+ */
+export function setHotspot(grid: PixelGrid, hotspot: Point): PixelGrid {
+  if (
+    !Number.isInteger(hotspot.x) ||
+    !Number.isInteger(hotspot.y) ||
+    hotspot.x < 0 ||
+    hotspot.y < 0 ||
+    hotspot.x >= grid.width ||
+    hotspot.y >= grid.height
+  ) {
+    throw new Error(
+      `pixelGrid: hotspot (${hotspot.x}, ${hotspot.y}) out of bounds for ${grid.width}x${grid.height} grid`,
+    );
+  }
+  return { ...grid, hotspot: { x: hotspot.x, y: hotspot.y } };
+}
+
 export function serializePixelGrid(grid: PixelGrid): PixelGridJson {
   return {
     version: 1,

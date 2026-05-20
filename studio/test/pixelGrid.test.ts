@@ -3,6 +3,7 @@ import {
   createPixelGrid,
   getPixel,
   setPixel,
+  setHotspot,
   dimensions,
   parsePixelGrid,
   serializePixelGrid,
@@ -69,6 +70,44 @@ describe('pixelGrid', () => {
     it('rejects negative palette indices', () => {
       const g = createPixelGrid({ width: 1, height: 1 });
       expect(() => setPixel(g, 0, 0, -1)).toThrow(/palette index/);
+    });
+  });
+
+  // Issue #16 — the hotspot crosshair on the canvas is draggable. The
+  // editor reducer (or any caller) needs an immutable way to relocate the
+  // hotspot without rebuilding the pixel array. Mirrors setPixel's shape:
+  // pure update that returns a new grid sharing rows with the original.
+  describe('setHotspot', () => {
+    it('returns a new grid with the requested hotspot', () => {
+      const g = createPixelGrid({ width: 4, height: 4 });
+      const moved = setHotspot(g, { x: 1, y: 3 });
+      expect(moved.hotspot).toEqual({ x: 1, y: 3 });
+    });
+
+    it('does not mutate the input grid', () => {
+      const g = createPixelGrid({ width: 4, height: 4, hotspot: { x: 0, y: 0 } });
+      setHotspot(g, { x: 2, y: 2 });
+      expect(g.hotspot).toEqual({ x: 0, y: 0 });
+    });
+
+    it('preserves the pixel data', () => {
+      const painted = setPixel(createPixelGrid({ width: 3, height: 3 }), 1, 1, 5);
+      const moved = setHotspot(painted, { x: 0, y: 2 });
+      expect(getPixel(moved, 1, 1)).toBe(5);
+      // The same row references survive — the hotspot move never copies
+      // pixel data.
+      expect(moved.pixels).toBe(painted.pixels);
+    });
+
+    it('rejects out-of-bounds hotspots', () => {
+      const g = createPixelGrid({ width: 2, height: 2 });
+      expect(() => setHotspot(g, { x: 2, y: 0 })).toThrow(/hotspot/);
+      expect(() => setHotspot(g, { x: 0, y: -1 })).toThrow(/hotspot/);
+    });
+
+    it('rejects non-integer hotspots', () => {
+      const g = createPixelGrid({ width: 4, height: 4 });
+      expect(() => setHotspot(g, { x: 1.5, y: 2 })).toThrow(/hotspot/);
     });
   });
 
