@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useState, type Reducer } from 'react';
-import { parsePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
+import { parsePixelGrid, serializePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
 import {
   createWorkflowState,
   reduceWorkflow,
@@ -9,6 +9,7 @@ import {
   type WorkflowState,
 } from '../lib/workflowMachine.js';
 import { PixelCanvas } from './PixelCanvas.js';
+import { PixelEditor } from './PixelEditor.js';
 import { useReloadChannel } from './useReloadChannel.js';
 
 interface PaletteEntry {
@@ -110,6 +111,41 @@ async function postLock(projectName: string, candidateId: string): Promise<void>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ stage: 'first', candidateId }),
   });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+}
+
+async function putFrame(projectName: string, fileName: string, grid: PixelGrid): Promise<void> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectName)}/frames/${encodeURIComponent(fileName)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(grid) }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+}
+
+async function putCandidate(
+  projectName: string,
+  stage: 'first',
+  id: string,
+  grid: PixelGrid,
+): Promise<void> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectName)}/candidates/${encodeURIComponent(stage)}/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grid: serializePixelGrid(grid) }),
+    },
+  );
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -292,6 +328,27 @@ export function App(): JSX.Element {
   const showCandidates = project.firstCandidates.length > 0 && selectedCandidate !== undefined;
   const mainGrid = showCandidates ? selectedCandidate!.grid : project.frames[0]!.grid;
   const mainLabel = showCandidates ? selectedCandidate!.fileName : project.frames[0]!.fileName;
+  const mainFrameFile = project.frames[0]!.fileName;
+  // Editing target: the candidate when we're browsing the gallery, otherwise
+  // the underlying frame. The first-stage lock froze the selected candidate
+  // into frame_00 already, so editing the candidate after that point still
+  // writes to candidates/<id>.json — that is the manual edit surface; the
+  // recipe never overwrites it (PRD acceptance criterion 6 / #13).
+  const onPersist = useCallback(
+    (next: PixelGrid): void => {
+      const projectName = project.name;
+      const writer = showCandidates
+        ? putCandidate(projectName, 'first', selectedCandidate!.id, next)
+        : putFrame(projectName, mainFrameFile, next);
+      writer.catch((err: unknown) => {
+        setState({
+          status: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    },
+    [project.name, showCandidates, selectedCandidate, mainFrameFile],
+  );
   // The Lock action only appears in the first stage, only when a candidate
   // is selected, and only while the stage is unlocked. After the lock the
   // button collapses to a static "Locked" badge so the gallery still tells
@@ -328,9 +385,16 @@ export function App(): JSX.Element {
         ) : null}
       </header>
       <main className="studio__stage">
-        <div className="studio__canvas-wrap">
-          <PixelCanvas grid={mainGrid} palette={project.palette} pixelSize={16} />
-        </div>
+        <PixelEditor
+          // Re-key on the editing target so a candidate switch resets the
+          // editor's local undo history — undo should not cross frame
+          // boundaries.
+          key={`${project.name}:${showCandidates ? `cand:${selectedCandidate!.id}` : `frame:${mainFrameFile}`}`}
+          grid={mainGrid}
+          palette={project.palette}
+          pixelSize={16}
+          onPersist={onPersist}
+        />
       </main>
       {showCandidates ? (
         <CandidateStrip

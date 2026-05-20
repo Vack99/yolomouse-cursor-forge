@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { getPixel, type PixelGrid } from '../lib/pixelGrid.js';
 
 interface PaletteEntry {
@@ -15,6 +15,12 @@ interface Props {
   palette: Palette;
   /** Screen pixels per pixel of the grid. */
   pixelSize: number;
+  /**
+   * Optional click handler. Fires with grid-cell coordinates on pointer
+   * down or drag. The renderer stays palette-agnostic — the editor reducer
+   * decides what to do with the (x, y) hit.
+   */
+  onPixel?: (x: number, y: number, kind: 'down' | 'drag') => void;
 }
 
 function parseRgbaHex(hex: string): [number, number, number, number] {
@@ -44,8 +50,68 @@ function paletteLookup(palette: Palette): Map<number, [number, number, number, n
  * visible (a hard requirement from the PRD: "clearly see the individual
  * pixels of the frame I am reviewing").
  */
-export function PixelCanvas({ grid, palette, pixelSize }: Props): JSX.Element {
+export function PixelCanvas({ grid, palette, pixelSize, onPixel }: Props): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  // Track the last pointer-emitted cell so a drag-across-many-cells fires
+  // exactly once per cell. Without this the editor reducer's same-value
+  // no-op still triggers re-renders for every mousemove event.
+  const lastCellRef = useRef<{ x: number; y: number } | null>(null);
+
+  const pointFromEvent = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } | null => {
+      const canvas = ref.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      // Use rect (CSS pixels) over canvas width (backing-store pixels) so
+      // dpr-scaled displays still hit the right cell.
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const x = Math.floor(cx / pixelSize);
+      const y = Math.floor(cy / pixelSize);
+      if (x < 0 || y < 0 || x >= grid.width || y >= grid.height) return null;
+      return { x, y };
+    },
+    [grid.width, grid.height, pixelSize],
+  );
+
+  const handleDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>): void => {
+      if (!onPixel) return;
+      const p = pointFromEvent(e);
+      if (!p) return;
+      // pointer-capture lets us keep receiving moves even if the cursor
+      // briefly leaves the canvas bounds during a drag.
+      e.currentTarget.setPointerCapture(e.pointerId);
+      lastCellRef.current = p;
+      onPixel(p.x, p.y, 'down');
+    },
+    [onPixel, pointFromEvent],
+  );
+
+  const handleMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>): void => {
+      if (!onPixel) return;
+      if (e.buttons === 0) return;
+      const p = pointFromEvent(e);
+      if (!p) return;
+      const last = lastCellRef.current;
+      if (last && last.x === p.x && last.y === p.y) return;
+      lastCellRef.current = p;
+      onPixel(p.x, p.y, 'drag');
+    },
+    [onPixel, pointFromEvent],
+  );
+
+  const handleUp = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>): void => {
+      if (!onPixel) return;
+      lastCellRef.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    },
+    [onPixel],
+  );
 
   useEffect(() => {
     const canvas = ref.current;
@@ -108,5 +174,15 @@ export function PixelCanvas({ grid, palette, pixelSize }: Props): JSX.Element {
     ctx.stroke();
   }, [grid, palette, pixelSize]);
 
-  return <canvas ref={ref} className="studio__canvas" />;
+  return (
+    <canvas
+      ref={ref}
+      className="studio__canvas"
+      onPointerDown={onPixel ? handleDown : undefined}
+      onPointerMove={onPixel ? handleMove : undefined}
+      onPointerUp={onPixel ? handleUp : undefined}
+      onPointerCancel={onPixel ? handleUp : undefined}
+      style={onPixel ? { cursor: 'crosshair', touchAction: 'none' } : undefined}
+    />
+  );
 }

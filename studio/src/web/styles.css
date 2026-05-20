@@ -232,3 +232,97 @@ body {
 .studio__lock--locked:hover {
   background: rgba(95, 208, 197, 0.06);
 }
+
+.studio__editor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.studio__editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio__editor-tools,
+.studio__editor-history,
+.studio__editor-swatches {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--grid-line);
+  border-radius: 4px;
+}
+
+.studio__tool {
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-dim);
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.studio__tool:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--grid-line-strong);
+}
+
+.studio__tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.studio__tool--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 184, 107, 0.08);
+}
+
+.studio__swatch {
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid var(--grid-line-strong);
+  border-radius: 3px;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio__swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.studio__swatch--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 184, 107, 0.35);
+}
+
+.studio__swatch--transparent {
+  background:
+    linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 8px 8px,
+    linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 8px 8px,
+    linear-gradient(45deg, transparent 75%, #2a2d33 75%) 0 0 / 8px 8px,
+    linear-gradient(-45deg, transparent 75%, #2a2d33 75%) 0 0 / 8px 8px,
+    #1a1d23;
+}
+
+.studio__swatch-label {
+  font-size: 0.6rem;
+  color: rgba(0, 0, 0, 0.6);
+  /* light-text fallback for dark swatches — keep readable on any colour. */
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
