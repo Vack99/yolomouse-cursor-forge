@@ -523,3 +523,190 @@ describe('workflowMachine — middle stage', () => {
     expect(s.selected.middle).toBe('candidate_01');
   });
 });
+
+// Issue #17 — last-frame stage + post-keyframes transition.
+//
+// The last stage is symmetric to middle: candidates-loaded / select / lock
+// transitions all apply once the middle stage is locked. The novel
+// transition is what happens when `last` itself is locked. Per the PRD,
+// once all three keyframes are frozen the workflow leaves the
+// candidate-gallery phase and enters the "post-keyframes" phase — the
+// state where #18's tween step picks up. We encode that as a new phase
+// value `'tween-ready'`. The reducer's `stage` field widens from `Stage`
+// to `Phase = Stage | 'tween-ready'`; the per-stage candidate / selected
+// / locked records stay keyed by `Stage` so there is no
+// `candidates/tween-ready/` directory on disk.
+
+describe('workflowMachine — last stage', () => {
+  const firstRecipe: Recipe = extractRecipe(gridWithPixels());
+  const midRecipe: Recipe = extractRecipe(gridWithPixels());
+
+  function preloadMiddleLocked(): WorkflowState {
+    // A state where first + middle are already locked — i.e. we are sitting
+    // at the start of the last stage with no last candidates yet.
+    let s = reduceWorkflow(createWorkflowState(), {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: firstRecipe },
+    });
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: midRecipe },
+    });
+    return s;
+  }
+
+  it('initial state shape includes a last slot with no candidates and no selection', () => {
+    const s = createWorkflowState();
+    expect(s.candidates.last).toEqual([]);
+    expect(s.selected.last).toBeUndefined();
+    expect(s.locked.last).toBeUndefined();
+  });
+
+  it('records last-stage candidates via candidates-loaded after the middle lock', () => {
+    let s = preloadMiddleLocked();
+    expect(s.stage).toBe('last');
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01', 'candidate_02'],
+    });
+    expect(s.candidates.last).toEqual(['candidate_00', 'candidate_01', 'candidate_02']);
+    expect(s.selected.last).toBe('candidate_00');
+    // Both prior locks survive — locking last does not happen yet, and the
+    // earlier keyframes must persist as the truth for tweening.
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    expect(s.locked.middle).toEqual({ id: 'candidate_00', recipe: midRecipe });
+  });
+
+  it('selects a last candidate when it is in the last candidate set', () => {
+    let s = preloadMiddleLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    s = reduceWorkflow(s, { type: 'select', stage: 'last', id: 'candidate_01' });
+    expect(s.selected.last).toBe('candidate_01');
+  });
+
+  it('locking the last candidate advances the workflow into the tween-ready phase', () => {
+    let s = preloadMiddleLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const lastRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'last',
+      id: 'candidate_01',
+      recipe: lastRecipe,
+    });
+    // Post-keyframes phase: every keyframe is frozen and the workflow is
+    // ready for #18's tween step to run.
+    expect(s.stage).toBe('tween-ready');
+    expect(s.locked.last).toEqual({ id: 'candidate_01', recipe: lastRecipe });
+    // Prior locks untouched — all three keyframes are now frozen.
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    expect(s.locked.middle).toEqual({ id: 'candidate_00', recipe: midRecipe });
+    // PRD: nothing discarded — last candidates stay browsable post-lock.
+    expect(s.candidates.last).toEqual(['candidate_00', 'candidate_01']);
+  });
+
+  it('rejects locking a last candidate that is not in the last candidate set', () => {
+    let s = preloadMiddleLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00'],
+    });
+    const lastRecipe: Recipe = extractRecipe(gridWithPixels());
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'last',
+        id: 'candidate_99',
+        recipe: lastRecipe,
+      }),
+    ).toThrow(/not in candidate set/i);
+  });
+
+  it('rejects a second lock on the last stage', () => {
+    let s = preloadMiddleLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const lastRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'last',
+      id: 'candidate_00',
+      recipe: lastRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'last',
+        id: 'candidate_01',
+        recipe: lastRecipe,
+      }),
+    ).toThrow(/already locked/i);
+  });
+
+  it('rejects further last-stage select transitions once locked', () => {
+    let s = preloadMiddleLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const lastRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'last',
+      id: 'candidate_00',
+      recipe: lastRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, { type: 'select', stage: 'last', id: 'candidate_01' }),
+    ).toThrow(/locked/i);
+  });
+
+  it('rehydrates all three keyframe locks from disk and lands on the tween-ready phase', () => {
+    // Every stage already locked on disk — closing the tab and re-opening
+    // it must restore the full keyframe chain and the post-keyframes phase,
+    // not silently roll back to `last`.
+    let s = createWorkflowState();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: firstRecipe },
+    });
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: midRecipe },
+    });
+    const lastRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'last',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_01', recipe: lastRecipe },
+    });
+    expect(s.stage).toBe('tween-ready');
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    expect(s.locked.middle).toEqual({ id: 'candidate_00', recipe: midRecipe });
+    expect(s.locked.last).toEqual({ id: 'candidate_01', recipe: lastRecipe });
+    expect(s.selected.last).toBe('candidate_01');
+  });
+});

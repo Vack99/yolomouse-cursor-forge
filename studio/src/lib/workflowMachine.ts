@@ -18,6 +18,17 @@ import type { PixelGrid } from './pixelGrid.js';
 export type Stage = 'first' | 'middle' | 'last';
 
 /**
+ * Workflow phase = the keyframe stages plus the post-keyframes sentinel
+ * the reducer enters once the `last` stage is locked. `'tween-ready'`
+ * signals "every keyframe is frozen, the candidate-gallery loop is done,
+ * the tween step (#18) takes over from here." It is intentionally NOT a
+ * `Stage`: there is no `candidates/tween-ready/` directory on disk and
+ * the per-stage candidate / selected / locked records stay keyed by
+ * `Stage`. Only the reducer's `stage` field widens to `Phase`.
+ */
+export type Phase = Stage | 'tween-ready';
+
+/**
  * Composition recipe — metadata captured at lock time so later stages can
  * generate candidates that share the locked frame's silhouette and palette.
  * Derived from the grid by `extractRecipe`; never mutated.
@@ -45,8 +56,14 @@ export interface LockedFrame {
 }
 
 export interface WorkflowState {
-  /** Which stage of the workflow is currently active. */
-  readonly stage: Stage;
+  /**
+   * Current workflow phase — one of the three keyframe stages or the
+   * post-keyframes `'tween-ready'` sentinel. While the phase is a
+   * keyframe stage, the gallery surfaces that stage's candidates; once
+   * the phase is `'tween-ready'` every keyframe is locked and the tween
+   * step (#18) takes over.
+   */
+  readonly stage: Phase;
   /** Ordered candidate ids per stage. Order matches the on-disk read order. */
   readonly candidates: { readonly [S in Stage]: ReadonlyArray<string> };
   /**
@@ -90,10 +107,16 @@ export type WorkflowAction =
  */
 export const STAGES: ReadonlyArray<Stage> = ['first', 'middle', 'last'];
 
-const STAGE_AFTER: { readonly [S in Stage]: Stage | undefined } = {
+/**
+ * The phase a successful lock on the given keyframe stage transitions to.
+ * Locking `last` leaves the keyframe-stage range entirely and enters the
+ * post-keyframes `'tween-ready'` phase — the signal that #18's tween
+ * step is up next.
+ */
+const STAGE_AFTER: { readonly [S in Stage]: Phase } = {
   first: 'middle',
   middle: 'last',
-  last: undefined,
+  last: 'tween-ready',
 };
 
 export function createWorkflowState(): WorkflowState {
@@ -167,8 +190,8 @@ export function reduceWorkflow(state: WorkflowState, action: WorkflowAction): Wo
         prior !== undefined && ids.includes(prior)
           ? prior
           : action.locked?.id ?? ids[0];
-      const advancedStage =
-        action.locked !== undefined ? STAGE_AFTER[action.stage] ?? state.stage : state.stage;
+      const advancedStage: Phase =
+        action.locked !== undefined ? STAGE_AFTER[action.stage] : state.stage;
       return {
         ...state,
         stage: advancedStage,
@@ -204,13 +227,12 @@ export function reduceWorkflow(state: WorkflowState, action: WorkflowAction): Wo
           `workflowMachine: '${action.id}' is not in candidate set for stage '${action.stage}'`,
         );
       }
-      const next = STAGE_AFTER[action.stage];
       return {
         ...state,
-        // Final stage locks leave `stage` where it is — there is no "after"
-        // to advance into. Until #18 adds the tween stage, only `first`
-        // has a successor.
-        stage: next ?? state.stage,
+        // Every keyframe stage has a successor phase — `first` → `middle`,
+        // `middle` → `last`, `last` → `'tween-ready'` (the post-keyframes
+        // sentinel where #18's tween step takes over).
+        stage: STAGE_AFTER[action.stage],
         locked: {
           ...state.locked,
           [action.stage]: { id: action.id, recipe: action.recipe },
