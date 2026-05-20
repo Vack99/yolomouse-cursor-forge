@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "colors": [
+    { "index": 0, "rgba": "00000000" },
+    { "index": 1, "rgba": "FFFFFFFF" },
+    { "index": 2, "rgba": "1A1A1AFF" },
+    { "index": 3, "rgba": "FF6B6BFF" }
+  ]
+}

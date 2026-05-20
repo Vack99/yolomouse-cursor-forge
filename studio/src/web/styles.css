@@ -1,0 +1,404 @@
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --bg-elev: #1c1f25;
+  --fg: #e6e8eb;
+  --fg-dim: #8b939d;
+  --accent: #ffb86b;
+  --grid-line: rgba(255, 255, 255, 0.08);
+  --grid-line-strong: rgba(255, 255, 255, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.studio {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+}
+
+.studio__header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--grid-line);
+  background: var(--bg-elev);
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.studio__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.studio__project {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.studio__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.studio__picker-label {
+  color: var(--fg-dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.studio__picker-select {
+  background: var(--bg);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  border: 1px solid var(--grid-line-strong);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+}
+
+.studio__picker-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.studio__meta {
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+
+.studio__stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  overflow: auto;
+}
+
+.studio__canvas-wrap {
+  display: inline-block;
+  padding: 1rem;
+  background: var(--bg-elev);
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.studio__canvas {
+  display: block;
+  image-rendering: pixelated;
+  background:
+    linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(45deg, transparent 75%, #2a2d33 75%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, transparent 75%, #2a2d33 75%) 0 0 / 16px 16px,
+    #22252b;
+}
+
+.studio__status {
+  padding: 2rem;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.studio__error {
+  color: #ff7e7e;
+  white-space: pre-wrap;
+}
+
+.studio__strip {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--grid-line);
+  background: var(--bg-elev);
+  overflow-x: auto;
+  /* Stay visible even on narrow stages — the strip is the gallery's
+     navigation, not decoration. */
+  flex-wrap: nowrap;
+}
+
+.studio__thumb {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--grid-line-strong);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+  /* The PixelCanvas inside each button keeps its pixel-grid overlay; the
+     button frame is just a hit target. */
+}
+
+.studio__thumb:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.studio__thumb--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.studio__thumb--locked {
+  /* Locked candidate stands out even when another is selected — a soft
+     teal glow + dashed border are visible at every scale the strip ever
+     uses, without competing with the active-selection accent. */
+  border-color: #5fd0c5;
+  border-style: dashed;
+  box-shadow: 0 0 0 1px rgba(95, 208, 197, 0.35) inset;
+}
+
+.studio__thumb--locked.studio__thumb--active {
+  /* When the locked candidate is also the actively-browsed one, keep
+     both signals: accent border with a thin teal halo around it. */
+  border-color: var(--accent);
+  border-style: solid;
+  box-shadow:
+    0 0 0 1px var(--accent) inset,
+    0 0 0 3px rgba(95, 208, 197, 0.35);
+}
+
+.studio__thumb-label {
+  letter-spacing: 0.02em;
+}
+
+.studio__stage-badge {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.studio__lock {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.studio__lock:hover {
+  background: rgba(255, 184, 107, 0.12);
+}
+
+.studio__lock:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.studio__lock--locked {
+  cursor: default;
+  border-color: #5fd0c5;
+  color: #5fd0c5;
+  background: rgba(95, 208, 197, 0.06);
+}
+
+.studio__lock--locked:hover {
+  background: rgba(95, 208, 197, 0.06);
+}
+
+.studio__lock-chain {
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.studio__editor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.studio__editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio__editor-tools,
+.studio__editor-history,
+.studio__editor-swatches {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--grid-line);
+  border-radius: 4px;
+}
+
+.studio__tool {
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-dim);
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.studio__tool:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--grid-line-strong);
+}
+
+.studio__tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.studio__tool--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 184, 107, 0.08);
+}
+
+.studio__swatch {
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid var(--grid-line-strong);
+  border-radius: 3px;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio__swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.studio__swatch--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 184, 107, 0.35);
+}
+
+.studio__swatch--transparent {
+  background:
+    linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 8px 8px,
+    linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 8px 8px,
+    linear-gradient(45deg, transparent 75%, #2a2d33 75%) 0 0 / 8px 8px,
+    linear-gradient(-45deg, transparent 75%, #2a2d33 75%) 0 0 / 8px 8px,
+    #1a1d23;
+}
+
+.studio__swatch-label {
+  font-size: 0.6rem;
+  color: rgba(0, 0, 0, 0.6);
+  /* light-text fallback for dark swatches — keep readable on any colour. */
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+/* Onion-skin toggle — sits in the header next to Lock and the stage badge. */
+.studio__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-dim);
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.studio__toggle input {
+  accent-color: var(--accent);
+}
+
+/* Reference panel — renders alongside the editor inside .studio__stage. */
+.studio__refs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-left: 1.5rem;
+  padding: 0.75rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--grid-line);
+  border-radius: 6px;
+  max-width: 16rem;
+  align-self: flex-start;
+}
+
+.studio__refs-title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.studio__refs-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.studio__refs-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.studio__refs-img {
+  width: 100%;
+  max-width: 14rem;
+  height: auto;
+  display: block;
+  image-rendering: auto;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.studio__refs-label {
+  color: var(--fg-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}

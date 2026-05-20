@@ -40,11 +40,115 @@ A workshop where Aaron + Claude collaboratively design custom **animated cursors
 |---|---|---|
 | `new` | `<Name> [-Frames 8\|12\|24] [-Size 64]` | Scaffold from `projects\_template\`. Default 8 frames at 64×64. |
 | `build` | `<Name>` | Compile grids → `.ani` + bundle + previews in `build\`. |
+| `canvas` | `<Name> [-Port 5174] [-NoBrowser]` | Launch Cursor Studio (localhost browser canvas) for the project. |
 | `preview` | `<Name>` | Open `build\preview.gif` and `build\preview_strip.png`. |
 | `install` | `<Name>` | Copy `build\` contents into YoloMouse `Cursors\<Name>\`. |
 | `uninstall` | `<Name>` | Remove `<Name>` from YoloMouse Cursors. |
 | `reload` | (none) | Kill + relaunch `YoloLauncher.exe`. |
 | `list` | (none) | Show all projects + build/install status. |
+
+## Cursor Studio (`studio/`)
+
+`forge canvas <Name>` launches **Cursor Studio**, a localhost browser canvas
+that is the shared visual design surface for cursor work (PRD `#5`, umbrella
+PR `#21`). The full studio shipped except for tween generation (`#18`, HITL),
+loop playback (`#19`, blocked on `#18`), and the in-canvas build/install/reload
+buttons (`#20`, blocked on `#18`). The `.ani` build path itself works via
+`forge build` — JSON-frame support landed in `#8`.
+
+### What shipped (12 of 15 slices)
+
+- `forge canvas <Name>` — Node HTTP + WebSocket server + React UI; file watcher
+  pushes reload events on every disk change.
+- Project picker dropdown + Claude-driven switching via `forge canvas-select`.
+- Candidate gallery: large main view + thumbnail strip; click to switch.
+- **Lock** action freezes the selected candidate's grid and records a
+  composition recipe (palette / shapes / silhouette / proportions). Workflow
+  state machine advances `first → middle → last → tween-ready`.
+- Minimal pixel editor — pencil / eraser / eyedropper / hotspot + undo/redo;
+  hotkeys `P` / `E` / `I` / `H`, `Ctrl+Z`, `Ctrl+Y`, `Ctrl+Shift+Z`.
+- Onion-skin toggle (ghosts locked keyframes under the current frame),
+  reference panel (`projects/<Name>/source/`), draggable hotspot crosshair.
+- "Generate more candidates" expansion via `forge canvas-stage` + the
+  `/api/projects/:name/candidates/:stage` POST.
+
+### What's paused (in PR #21's HITL section)
+
+- **`#18` — tween interpolator (HITL).** Interpolating hard-edged pixel art is
+  not a naive per-pixel lerp; needs a design-review pass + a prototype on a
+  representative keyframe pair before the production module lands.
+- **`#19` — loop playback.** Sole blocker is `#18`.
+- **`#20` — in-canvas Build / Install / Reload buttons.** Blocked on `#18`,
+  though the `.ani` build path works via `forge build` today.
+
+### Working a new cursor in the studio — the canonical loop
+
+1. **Concept in chat.** Describe subject / aesthetic / size / palette leanings;
+   Claude grills until intent is sharp. Drop reference images into
+   `projects/<Name>/source/`.
+2. **Scaffold.** `forge canvas-new <Name> [-Size 64]` writes the minimal
+   skeleton — `palette.json` (transparent + 3 starter colors) +
+   `frames/frame_00.json` (Size×Size blank, hotspot centre). The running
+   studio's file watcher surfaces it in the picker live.
+3. **First-frame candidates.** Claude writes 4 JSON pixel grids into
+   `candidates/first/candidate_00..03.json` (via the procedural drawing
+   toolkit at `studio/src/lib/drawingToolkit.ts`, or by composing primitives
+   in `pnpm --dir studio gen-frame`). The gallery shows them within ~125ms.
+4. **Pick + Lock.** Click a thumbnail, click **Lock this candidate**. The
+   grid freezes; the workflow advances to `middle`.
+5. **Middle then last.** Claude generates 2–3 middle candidates → lock →
+   2–3 last candidates → lock. A lock-chain badge keeps prior keyframes
+   visible in the header.
+6. **Tween (paused).** When `#18` ships this is where the user picks 8 / 12 /
+   24 frames and the in-betweens auto-fill. Until then the `.ani` is a
+   3-frame loop from the keyframes alone.
+7. **Edit.** Pixel-edits via the in-canvas editor persist via debounced PUT.
+   Recipe never overwrites a manual edit (PRD acceptance criterion 6).
+8. **Build + deploy.** `forge build <Name>` → `<Name>.ani` + bundle + GIF
+   previews. `forge install <Name>` + `forge reload` ship to YoloMouse.
+
+### Rules and traps (non-obvious)
+
+- **`pnpm`, never `npm` or `yarn`.** `studio/` uses `pnpm-lock.yaml`;
+  `forge canvas` shells to `pnpm`. `package.json` carries
+  `pnpm.onlyBuiltDependencies: ["esbuild"]` so Vite/tsx's native binary
+  installs while every other package's build scripts stay gated. From repo
+  root: `pnpm --dir studio <cmd>`.
+- **JSON files must be BOM-less.** PS 5.1's `Set-Content -Encoding utf8`
+  prepends a UTF-8 BOM that Node's `JSON.parse` rejects with
+  `Unexpected token '﻿'`. Always use
+  `[System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding $false))`.
+- **`pnpm --dir studio lint`** runs ESLint over `src/`. The load-bearing rule
+  is `react-hooks/rules-of-hooks` — it catches the class of bug that gave us
+  the black-screen flash at first project load (see `tasks/lessons.md`).
+  Run before committing React-component changes.
+- **Filesystem is the single source of truth.** The watcher pushes change
+  events; the browser refetches. Don't add optimistic UI state that
+  disagrees with disk — let the round-trip drive the UI.
+- **Deep modules under `studio/src/lib/`** (pure / near-pure) carry the
+  logic; **glue under `src/server/` + `src/web/`** carries the orchestration.
+  Tests under `studio/test/` assert external behaviour only.
+
+### Key files
+
+- `forge.ps1` — verbs: `canvas`, `canvas-new`, `canvas-select`, `canvas-stage`
+  (plus the legacy `new`, `build`, `install`, `reload`, `preview`, `list`).
+- `studio/src/lib/pixelGrid.ts` — JSON pixel-grid schema
+  (`{ version: 1, width, height, hotspot: {x,y}, pixels: int[][] }`; index 0
+  is transparent) and pure ops.
+- `studio/src/server/main.ts` — HTTP + WebSocket entry point.
+- `studio/src/web/App.tsx` — React root + workflow wiring.
+- `lib/PixelGrid.ps1` — `Read-JsonFrame` / `Read-PaletteJson` (the PowerShell
+  side of JSON-frame support in `forge build`).
+
+### Reference projects
+
+- `projects/TracerDot/` — 16×16 arrow, the tracer fixture. `forge canvas
+  TracerDot` is the smoke test for the whole stack.
+- Pre-studio projects (`MacRainbow`, `PulseDot`, `Hinata`) use the legacy
+  `grid.txt` / PNG-frame formats; the studio picker filters them out
+  (no `palette.json`). They still build through the legacy `forge build`
+  path unchanged.
 
 ## Authoring paths
 
