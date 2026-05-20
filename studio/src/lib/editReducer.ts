@@ -20,15 +20,18 @@
 //   - pencil    → paint sets pixel(x,y) := activeIndex.
 //   - eraser    → paint sets pixel(x,y) := 0 (transparent).
 //   - eyedropper → paint reads pixel(x,y) into activeIndex, leaves grid alone.
+//   - hotspot   → set-hotspot relocates the hotspot crosshair to (x,y).
 // Eyedropper is non-mutating so it does not consume an undo slot.
+// Hotspot moves are undoable so a stray drag is reversible the same way a
+// stray pixel paint is — Ctrl+Z covers both gestures (issue #16).
 //
 // History limit defaults to 50: large enough that a run of small fixes
 // stays reversible, small enough that the memory footprint on a 256×256
 // grid stays well under a megabyte (~64KB per snapshot × 50).
 
-import { getPixel, setPixel, type PixelGrid } from './pixelGrid.js';
+import { getPixel, setHotspot, setPixel, type PixelGrid } from './pixelGrid.js';
 
-export type Tool = 'pencil' | 'eraser' | 'eyedropper';
+export type Tool = 'pencil' | 'eraser' | 'eyedropper' | 'hotspot';
 
 export interface EditorHistory {
   readonly past: ReadonlyArray<PixelGrid>;
@@ -48,6 +51,7 @@ export type EditorAction =
   | { type: 'select-tool'; tool: Tool }
   | { type: 'select-index'; index: number }
   | { type: 'paint'; x: number; y: number }
+  | { type: 'set-hotspot'; x: number; y: number }
   | { type: 'undo' }
   | { type: 'redo' }
   | { type: 'grid-replaced'; grid: PixelGrid };
@@ -112,6 +116,20 @@ export function reduceEditor(state: EditorState, action: EditorAction): EditorSt
         return state;
       }
       const nextGrid = setPixel(state.grid, action.x, action.y, value);
+      return {
+        ...state,
+        grid: nextGrid,
+        history: pushPast(state.history, state.grid, state.historyLimit),
+      };
+    }
+
+    case 'set-hotspot': {
+      // Idempotent on a same-position drag — the canvas fires moves for
+      // every cell crossed during a drag, and most are no-ops.
+      if (state.grid.hotspot.x === action.x && state.grid.hotspot.y === action.y) {
+        return state;
+      }
+      const nextGrid = setHotspot(state.grid, { x: action.x, y: action.y });
       return {
         ...state,
         grid: nextGrid,

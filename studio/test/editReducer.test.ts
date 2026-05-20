@@ -209,6 +209,46 @@ describe('editReducer — undo / redo', () => {
   });
 });
 
+// Hotspot mode + set-hotspot action — issue #16. The crosshair is draggable,
+// and the editor reducer is the right home for the gesture: it already owns
+// the grid (which carries the hotspot) and undo/redo (which the user expects
+// to cover an accidental drag). Treats a hotspot move as an undoable edit so
+// the same Ctrl+Z that reverses a stray pixel reverses a stray crosshair drag.
+describe('editReducer — hotspot tool', () => {
+  it('select-tool accepts the hotspot tool alongside pencil/eraser/eyedropper', () => {
+    let s = blank();
+    s = reduceEditor(s, { type: 'select-tool', tool: 'hotspot' });
+    expect(s.tool).toBe('hotspot');
+  });
+
+  it('set-hotspot relocates the hotspot and pushes an undoable history entry', () => {
+    let s = blank();
+    s = reduceEditor(s, { type: 'set-hotspot', x: 1, y: 2 });
+    expect(s.grid.hotspot).toEqual({ x: 1, y: 2 });
+    expect(s.history.past).toHaveLength(1);
+  });
+
+  it('set-hotspot to the current hotspot is a no-op', () => {
+    const s0 = blank();
+    const initial = s0.grid.hotspot;
+    const s1 = reduceEditor(s0, { type: 'set-hotspot', x: initial.x, y: initial.y });
+    expect(s1).toBe(s0);
+  });
+
+  it('undo reverses a hotspot drag', () => {
+    let s = blank();
+    const original = s.grid.hotspot;
+    s = reduceEditor(s, { type: 'set-hotspot', x: 0, y: 0 });
+    s = reduceEditor(s, { type: 'undo' });
+    expect(s.grid.hotspot).toEqual(original);
+  });
+
+  it('rejects out-of-bounds hotspot coordinates', () => {
+    const s = blank();
+    expect(() => reduceEditor(s, { type: 'set-hotspot', x: 99, y: 0 })).toThrow(/hotspot/);
+  });
+});
+
 describe('editReducer — grid replacement (external sync)', () => {
   it('grid-replaced swaps the working grid without consuming history', () => {
     // When the file watcher pushes a fresh grid from disk (e.g. Claude
