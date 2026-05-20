@@ -19,9 +19,28 @@ interface Props {
    * Optional click handler. Fires with grid-cell coordinates on pointer
    * down or drag. The renderer stays palette-agnostic — the editor reducer
    * decides what to do with the (x, y) hit.
+   *
+   * The parent picks per-gesture which of `onPixel` / `onHotspot` is wired
+   * based on the active tool — never both at once.
    */
   onPixel?: (x: number, y: number, kind: 'down' | 'drag') => void;
+  /**
+   * Optional hotspot drag handler. When wired, the canvas renders a
+   * drag-affordance cursor and emits the cell under the pointer on
+   * down/drag. Issue #16 — the user drags the crosshair freely.
+   */
+  onHotspot?: (x: number, y: number) => void;
+  /**
+   * Optional onion-skin grids — rendered first, under the working grid, at
+   * a faint global alpha. Issue #16 — ghosts the locked keyframes under
+   * the current frame so the user can see drift from the approved design.
+   * Renderer assumes every onion grid is the same dimensions as `grid`.
+   */
+  onion?: ReadonlyArray<PixelGrid>;
 }
+
+/** Global alpha used when painting onion-skin grids under the working grid. */
+const ONION_ALPHA = 0.22;
 
 function parseRgbaHex(hex: string): [number, number, number, number] {
   // Accepts 6 (RRGGBB) or 8 (RRGGBBAA) hex chars.
@@ -50,7 +69,7 @@ function paletteLookup(palette: Palette): Map<number, [number, number, number, n
  * visible (a hard requirement from the PRD: "clearly see the individual
  * pixels of the frame I am reviewing").
  */
-export function PixelCanvas({ grid, palette, pixelSize, onPixel }: Props): JSX.Element {
+export function PixelCanvas({ grid, palette, pixelSize, onPixel, onHotspot, onion }: Props): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
   // Track the last pointer-emitted cell so a drag-across-many-cells fires
   // exactly once per cell. Without this the editor reducer's same-value
@@ -74,43 +93,61 @@ export function PixelCanvas({ grid, palette, pixelSize, onPixel }: Props): JSX.E
     [grid.width, grid.height, pixelSize],
   );
 
+  // Pick the single active gesture sink for this render. The parent
+  // guarantees at most one of {onPixel, onHotspot} is wired at a time
+  // (the active tool decides), so dispatching is a simple branch rather
+  // than a multiplexer.
+  const emit = useCallback(
+    (x: number, y: number, kind: 'down' | 'drag'): void => {
+      if (onHotspot) {
+        onHotspot(x, y);
+        return;
+      }
+      if (onPixel) {
+        onPixel(x, y, kind);
+      }
+    },
+    [onPixel, onHotspot],
+  );
+  const interactive = onPixel !== undefined || onHotspot !== undefined;
+
   const handleDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>): void => {
-      if (!onPixel) return;
+      if (!interactive) return;
       const p = pointFromEvent(e);
       if (!p) return;
       // pointer-capture lets us keep receiving moves even if the cursor
       // briefly leaves the canvas bounds during a drag.
       e.currentTarget.setPointerCapture(e.pointerId);
       lastCellRef.current = p;
-      onPixel(p.x, p.y, 'down');
+      emit(p.x, p.y, 'down');
     },
-    [onPixel, pointFromEvent],
+    [interactive, emit, pointFromEvent],
   );
 
   const handleMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>): void => {
-      if (!onPixel) return;
+      if (!interactive) return;
       if (e.buttons === 0) return;
       const p = pointFromEvent(e);
       if (!p) return;
       const last = lastCellRef.current;
       if (last && last.x === p.x && last.y === p.y) return;
       lastCellRef.current = p;
-      onPixel(p.x, p.y, 'drag');
+      emit(p.x, p.y, 'drag');
     },
-    [onPixel, pointFromEvent],
+    [interactive, emit, pointFromEvent],
   );
 
   const handleUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>): void => {
-      if (!onPixel) return;
+      if (!interactive) return;
       lastCellRef.current = null;
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         e.currentTarget.releasePointerCapture(e.pointerId);
       }
     },
-    [onPixel],
+    [interactive],
   );
 
   useEffect(() => {
@@ -134,6 +171,27 @@ export function PixelCanvas({ grid, palette, pixelSize, onPixel }: Props): JSX.E
     ctx.clearRect(0, 0, w, h);
 
     const colours = paletteLookup(palette);
+
+    // Onion-skin first — locked keyframes ghost faintly under the working
+    // grid. globalAlpha multiplies each fill's alpha, so transparent cells
+    // stay transparent and the working grid above is fully opaque.
+    if (onion && onion.length > 0) {
+      ctx.globalAlpha = ONION_ALPHA;
+      for (const ghost of onion) {
+        if (ghost.width !== grid.width || ghost.height !== grid.height) continue;
+        for (let y = 0; y < ghost.height; y++) {
+          for (let x = 0; x < ghost.width; x++) {
+            const idx = getPixel(ghost, x, y);
+            const rgba = colours.get(idx);
+            if (!rgba || rgba[3] === 0) continue;
+            ctx.fillStyle = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3] / 255})`;
+            ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
     for (let y = 0; y < grid.height; y++) {
       for (let x = 0; x < grid.width; x++) {
         const idx = getPixel(grid, x, y);
@@ -172,17 +230,23 @@ export function PixelCanvas({ grid, palette, pixelSize, onPixel }: Props): JSX.E
     ctx.moveTo(hx, hy - pixelSize);
     ctx.lineTo(hx, hy + pixelSize);
     ctx.stroke();
-  }, [grid, palette, pixelSize]);
+  }, [grid, palette, pixelSize, onion]);
 
   return (
     <canvas
       ref={ref}
       className="studio__canvas"
-      onPointerDown={onPixel ? handleDown : undefined}
-      onPointerMove={onPixel ? handleMove : undefined}
-      onPointerUp={onPixel ? handleUp : undefined}
-      onPointerCancel={onPixel ? handleUp : undefined}
-      style={onPixel ? { cursor: 'crosshair', touchAction: 'none' } : undefined}
+      onPointerDown={interactive ? handleDown : undefined}
+      onPointerMove={interactive ? handleMove : undefined}
+      onPointerUp={interactive ? handleUp : undefined}
+      onPointerCancel={interactive ? handleUp : undefined}
+      // Hotspot mode uses a `move` cursor so the gesture reads as
+      // repositioning, not painting.
+      style={
+        interactive
+          ? { cursor: onHotspot ? 'move' : 'crosshair', touchAction: 'none' }
+          : undefined
+      }
     />
   );
 }

@@ -332,3 +332,73 @@ body {
   text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
   pointer-events: none;
 }
+
+/* Onion-skin toggle — sits in the header next to Lock and the stage badge. */
+.studio__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-dim);
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.studio__toggle input {
+  accent-color: var(--accent);
+}
+
+/* Reference panel — renders alongside the editor inside .studio__stage. */
+.studio__refs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-left: 1.5rem;
+  padding: 0.75rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--grid-line);
+  border-radius: 6px;
+  max-width: 16rem;
+  align-self: flex-start;
+}
+
+.studio__refs-title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.studio__refs-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.studio__refs-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.studio__refs-img {
+  width: 100%;
+  max-width: 14rem;
+  height: auto;
+  display: block;
+  image-rendering: auto;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.studio__refs-label {
+  color: var(--fg-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}

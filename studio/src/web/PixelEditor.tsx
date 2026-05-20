@@ -39,6 +39,11 @@ interface Props {
   /** Screen pixels per cell of the main canvas. */
   pixelSize: number;
   /**
+   * Onion-skin grids — locked keyframes ghosted faintly under the working
+   * grid. Issue #16. Pass an empty array (or undefined) to render no onion.
+   */
+  onion?: ReadonlyArray<PixelGrid>;
+  /**
    * Optional persistence sink. Called with the new grid after every mutating
    * action; the editor schedules the call on a short debounce so a drag is
    * one write, not many. Pass `undefined` to disable persistence (e.g. for
@@ -51,11 +56,13 @@ const TOOLS: ReadonlyArray<{ id: Tool; label: string; hotkey: string }> = [
   { id: 'pencil', label: 'Pencil', hotkey: 'P' },
   { id: 'eraser', label: 'Eraser', hotkey: 'E' },
   { id: 'eyedropper', label: 'Eyedropper', hotkey: 'I' },
+  // Issue #16 — draggable hotspot crosshair.
+  { id: 'hotspot', label: 'Hotspot', hotkey: 'H' },
 ];
 
 const PERSIST_DEBOUNCE_MS = 120;
 
-export function PixelEditor({ grid, palette, pixelSize, onPersist }: Props): JSX.Element {
+export function PixelEditor({ grid, palette, pixelSize, onion, onPersist }: Props): JSX.Element {
   const editorReducer: Reducer<EditorState, EditorAction> = reduceEditor;
   // The reducer is seeded once on first mount with the initial grid; later
   // grid changes from disk arrive via the `grid-replaced` effect below.
@@ -110,6 +117,13 @@ export function PixelEditor({ grid, palette, pixelSize, onPersist }: Props): JSX
   const onPixel = useCallback(
     (x: number, y: number): void => {
       dispatch({ type: 'paint', x, y });
+    },
+    [],
+  );
+
+  const onHotspot = useCallback(
+    (x: number, y: number): void => {
+      dispatch({ type: 'set-hotspot', x, y });
     },
     [],
   );
@@ -222,7 +236,16 @@ export function PixelEditor({ grid, palette, pixelSize, onPersist }: Props): JSX
         </div>
       </div>
       <div className="studio__canvas-wrap">
-        <PixelCanvas grid={editor.grid} palette={palette} pixelSize={pixelSize} onPixel={onPixel} />
+        <PixelCanvas
+          grid={editor.grid}
+          palette={palette}
+          pixelSize={pixelSize}
+          onion={onion}
+          // Tool dictates which gesture sink the canvas drives — never both
+          // at once, so a pencil drag cannot accidentally relocate the
+          // crosshair, and a hotspot drag cannot accidentally paint pixels.
+          {...(editor.tool === 'hotspot' ? { onHotspot } : { onPixel })}
+        />
       </div>
     </div>
   );

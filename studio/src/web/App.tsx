@@ -77,6 +77,8 @@ interface LoadedProject {
    * data for every wired stage so a stage switch is purely local.
    */
   stages: { readonly [S in Stage]: LoadedStage };
+  /** Reference images (filenames only) from projects/<Name>/source/. */
+  sourceImages: ReadonlyArray<string>;
 }
 
 type State =
@@ -106,6 +108,18 @@ async function loadCandidates(projectName: string, stage: Stage): Promise<Loaded
   };
 }
 
+async function loadSourceImages(projectName: string): Promise<string[]> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/source`);
+  if (!res.ok) {
+    // A missing source/ directory is reported as an empty list by the
+    // server; any other status means we should surface the problem.
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  const payload = (await res.json()) as { images: string[] };
+  return payload.images;
+}
+
 async function loadActiveProject(): Promise<LoadedProject> {
   const activeRes = await fetch('/api/active-project');
   if (!activeRes.ok) throw new Error(`active-project: HTTP ${activeRes.status}`);
@@ -118,12 +132,14 @@ async function loadActiveProject(): Promise<LoadedProject> {
   }
   const payload = (await projRes.json()) as ProjectResponse;
 
-  // Load every wired stage in parallel — the gallery switches between them
-  // locally based on workflow.stage, so the network cost is paid once per
-  // refresh regardless of which stage the user lands on.
-  const stageResults = await Promise.all(
-    UI_STAGES.map(async (s) => [s, await loadCandidates(name, s)] as const),
-  );
+  // Load every wired stage + the reference-image listing in parallel — the
+  // gallery switches between stages locally based on workflow.stage, and
+  // the reference panel renders alongside, so paying the network cost once
+  // up front keeps stage / tool switches local.
+  const [stageResults, sourceImages] = await Promise.all([
+    Promise.all(UI_STAGES.map(async (s) => [s, await loadCandidates(name, s)] as const)),
+    loadSourceImages(name),
+  ]);
   const stages = Object.fromEntries(stageResults) as { [S in Stage]: LoadedStage };
 
   return {
@@ -131,6 +147,7 @@ async function loadActiveProject(): Promise<LoadedProject> {
     palette: payload.palette,
     frames: payload.frames.map((f) => ({ fileName: f.fileName, grid: parsePixelGrid(f.grid) })),
     stages,
+    sourceImages,
   };
 }
 
@@ -203,6 +220,12 @@ async function postActiveProject(name: string): Promise<void> {
 export function App(): JSX.Element {
   const [state, setState] = useState<State>({ status: 'loading' });
   const [projects, setProjects] = useState<string[]>([]);
+  // Onion-skin defaults on once at least one keyframe is locked — there is
+  // nothing to ghost until then. The user can flip it off when the overlay
+  // gets in the way (acceptance criterion: "a toggle controls onion-skin
+  // visibility"). Persisted in component state, not in disk metadata —
+  // it's a viewing preference, not part of the design.
+  const [onionOn, setOnionOn] = useState<boolean>(true);
   // The workflow reducer holds candidate selection state. Lives alongside
   // `state` rather than inside it because selection survives across project
   // reloads (the reducer preserves a still-valid selection on
@@ -381,6 +404,21 @@ export function App(): JSX.Element {
     stageCandidates.find((c) => c.id === workflow.selected[activeStage]) ??
     stageCandidates[0];
 
+  // Onion-skin grids — every prior wired stage's locked candidate grid,
+  // filtered by canvas dimensions so a stage with a different size never
+  // misaligns under the working grid. Empty list (or onionOn=false) means
+  // the canvas renders the working grid only.
+  const onionGrids: PixelGrid[] = onionOn
+    ? UI_STAGES.filter((s) => s !== activeStage)
+        .map((s) => {
+          const lock = project.stages[s].lock;
+          if (lock === undefined) return undefined;
+          const cand = project.stages[s].candidates.find((c) => c.id === lock.id);
+          return cand?.grid;
+        })
+        .filter((g): g is PixelGrid => g !== undefined)
+    : [];
+
   const showCandidates = stageCandidates.length > 0 && selectedCandidate !== undefined;
   const mainGrid = showCandidates ? selectedCandidate!.grid : project.frames[0]!.grid;
   const mainLabel = showCandidates ? selectedCandidate!.fileName : project.frames[0]!.fileName;
@@ -434,6 +472,16 @@ export function App(): JSX.Element {
             Lock this candidate
           </button>
         ) : null}
+        {hasAnyLock(project) ? (
+          <label className="studio__toggle" title="Show locked keyframes ghosted under the current frame">
+            <input
+              type="checkbox"
+              checked={onionOn}
+              onChange={(e) => setOnionOn(e.currentTarget.checked)}
+            />
+            <span>Onion-skin</span>
+          </label>
+        ) : null}
       </header>
       <main className="studio__stage">
         <PixelEditor
@@ -445,8 +493,10 @@ export function App(): JSX.Element {
           grid={mainGrid}
           palette={project.palette}
           pixelSize={16}
+          onion={onionGrids}
           onPersist={onPersist}
         />
+        <ReferencePanel projectName={project.name} images={project.sourceImages} />
       </main>
       {showCandidates ? (
         <CandidateStrip
@@ -524,6 +574,48 @@ function ProjectPicker({ projects, active, onPick }: ProjectPickerProps): JSX.El
       </select>
     </label>
   );
+}
+
+interface ReferencePanelProps {
+  projectName: string;
+  images: ReadonlyArray<string>;
+}
+
+/**
+ * Side panel showing every reference image from `projects/<Name>/source/`.
+ * Issue #16's "reference panel" acceptance criterion. Renders the bytes
+ * straight from the static endpoint — the browser handles JPEG/PNG/WebP
+ * decoding for free. Hidden entirely when the project has no source/
+ * images, so a fresh project gets the full canvas.
+ */
+function ReferencePanel({ projectName, images }: ReferencePanelProps): JSX.Element | null {
+  if (images.length === 0) return null;
+  return (
+    <aside className="studio__refs" aria-label="Reference images">
+      <h2 className="studio__refs-title">Reference</h2>
+      <ul className="studio__refs-list">
+        {images.map((name) => (
+          <li key={name} className="studio__refs-item">
+            <img
+              className="studio__refs-img"
+              src={`/api/projects/${encodeURIComponent(projectName)}/source/${encodeURIComponent(name)}`}
+              alt={name}
+              title={name}
+              loading="lazy"
+            />
+            <span className="studio__refs-label">{name}</span>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
+
+function hasAnyLock(project: LoadedProject): boolean {
+  for (const s of UI_STAGES) {
+    if (project.stages[s].lock !== undefined) return true;
+  }
+  return false;
 }
 
 interface CandidateStripProps {
