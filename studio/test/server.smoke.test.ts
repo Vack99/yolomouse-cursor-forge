@@ -221,8 +221,34 @@ describe('http server (smoke)', () => {
     session = mkSession(tmpRoot, 'Hello');
     server = await startServer({ store, session, distDir });
 
-    const res = await fetch(`${server.url}api/projects/Hello/candidates/middle`);
+    // `last` is the stage not yet wired through the HTTP surface (#17). Once
+    // that lands this test moves to a synthetic unknown stage instead.
+    const res = await fetch(`${server.url}api/projects/Hello/candidates/last`);
     expect(res.status).toBe(400);
+  });
+
+  it('GET /api/projects/:name/candidates/middle returns the middle-stage candidates', async () => {
+    // Middle-stage candidates land in candidates/middle/ (issue #15). The
+    // endpoint accepts the stage the same way it accepts first; the project
+    // store decides what to read.
+    writeProject('MidGet');
+    const projDir = path.join(tmpRoot, 'projects', 'MidGet');
+    fs.mkdirSync(path.join(projDir, 'candidates', 'middle'), { recursive: true });
+    const g = setPixel(createPixelGrid({ width: 1, height: 1 }), 0, 0, 1);
+    fs.writeFileSync(
+      path.join(projDir, 'candidates', 'middle', 'candidate_00.json'),
+      JSON.stringify(serializePixelGrid(g)),
+      'utf8',
+    );
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    session = mkSession(tmpRoot, 'MidGet');
+    server = await startServer({ store, session, distDir });
+
+    const res = await fetch(`${server.url}api/projects/MidGet/candidates/middle`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { stage: string; candidates: Array<{ id: string }> };
+    expect(body.stage).toBe('middle');
+    expect(body.candidates.map((c) => c.id)).toEqual(['candidate_00']);
   });
 
   it('POST /api/active-project rejects a malformed body', async () => {
@@ -450,7 +476,8 @@ describe('http server (smoke)', () => {
     server = await startServer({ store, session, distDir });
 
     const g = createPixelGrid({ width: 1, height: 1 });
-    const put = await fetch(`${server.url}api/projects/CandStage/candidates/middle/candidate_00`, {
+    // `last` is the not-yet-wired stage at this point in the workflow (#17).
+    const put = await fetch(`${server.url}api/projects/CandStage/candidates/last/candidate_00`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ grid: serializePixelGrid(g) }),

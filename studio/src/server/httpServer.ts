@@ -12,6 +12,18 @@ import { extractRecipe } from '../lib/workflowMachine.js';
 import type { Stage } from '../lib/workflowMachine.js';
 import { parsePixelGrid } from '../lib/pixelGrid.js';
 
+/**
+ * Workflow stages currently exposed through the HTTP surface. The reducer
+ * and filesystem layer know about every stage in `STAGES`; this set tracks
+ * which stages the UI has wired through the API at the present commit. New
+ * stages join here when their slice lands (`last` arrives with #17).
+ */
+const WIRED_STAGES = new Set<Stage>(['first', 'middle']);
+
+function asWiredStage(s: string): Stage | undefined {
+  return WIRED_STAGES.has(s as Stage) ? (s as Stage) : undefined;
+}
+
 export interface ServerOptions {
   store: ProjectStore;
   /** Holds the currently active project; mutated by POST /api/active-project. */
@@ -114,7 +126,8 @@ export function createApp(opts: ServerOptions): http.RequestListener {
         if (candAppendMatch && req.method === 'POST') {
           const requested = decodeURIComponent(candAppendMatch[1]!);
           const stageStr = decodeURIComponent(candAppendMatch[2]!);
-          if (stageStr !== 'first') {
+          const stage = asWiredStage(stageStr);
+          if (stage === undefined) {
             sendError(res, 400, `unknown stage '${stageStr}'`);
             return;
           }
@@ -137,8 +150,8 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           }
           try {
             const grids = body.grids.map((g) => parsePixelGrid(g));
-            const ids = store.appendCandidates(requested, stageStr, grids);
-            sendJson(res, 200, { stage: stageStr, ids });
+            const ids = store.appendCandidates(requested, stage, grids);
+            sendJson(res, 200, { stage, ids });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const status = /not found/i.test(msg) ? 404 : 400;
@@ -156,18 +169,17 @@ export function createApp(opts: ServerOptions): http.RequestListener {
         if (candMatch && req.method === 'GET') {
           const requested = decodeURIComponent(candMatch[1]!);
           const stageStr = decodeURIComponent(candMatch[2]!);
-          if (stageStr !== 'first') {
-            // Only the `first` stage's candidate read is wired today.
-            // Later issues (#15 middle, #17 last) widen this check
-            // alongside building their stage's candidate directory layout.
+          const stage = asWiredStage(stageStr);
+          if (stage === undefined) {
+            // `last` joins WIRED_STAGES with #17.
             sendError(res, 400, `unknown stage '${stageStr}'`);
             return;
           }
           try {
-            const candidates = store.readCandidates(requested, stageStr);
-            const lock = store.readLock(requested, stageStr);
+            const candidates = store.readCandidates(requested, stage);
+            const lock = store.readLock(requested, stage);
             sendJson(res, 200, {
-              stage: stageStr,
+              stage,
               candidates: candidates.map((c) => ({
                 id: c.id,
                 fileName: c.fileName,
@@ -205,15 +217,19 @@ export function createApp(opts: ServerOptions): http.RequestListener {
             sendError(res, 400, 'body must be valid JSON');
             return;
           }
-          if (body.stage !== 'first') {
-            sendError(res, 400, "body.stage must be 'first'");
+          const stage = typeof body.stage === 'string' ? asWiredStage(body.stage) : undefined;
+          if (stage === undefined) {
+            sendError(
+              res,
+              400,
+              `body.stage must be one of: ${[...WIRED_STAGES].join(', ')}`,
+            );
             return;
           }
           if (typeof body.candidateId !== 'string' || body.candidateId.length === 0) {
             sendError(res, 400, "body.candidateId must be a non-empty string");
             return;
           }
-          const stage: Stage = body.stage;
           const candidateId = body.candidateId;
           try {
             const candidates = store.readCandidates(requested, stage);
@@ -278,7 +294,8 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           const requested = decodeURIComponent(candWriteMatch[1]!);
           const stageStr = decodeURIComponent(candWriteMatch[2]!);
           const id = decodeURIComponent(candWriteMatch[3]!);
-          if (stageStr !== 'first') {
+          const stage = asWiredStage(stageStr);
+          if (stage === undefined) {
             sendError(res, 400, `unknown stage '${stageStr}'`);
             return;
           }
@@ -296,7 +313,7 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           }
           try {
             const grid = parsePixelGrid(body.grid);
-            store.writeCandidate(requested, stageStr, id, grid);
+            store.writeCandidate(requested, stage, id, grid);
             sendJson(res, 200, { ok: true });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
