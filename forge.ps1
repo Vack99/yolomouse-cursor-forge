@@ -33,9 +33,10 @@ forge.ps1 — YoloMouse Cursor Forge
 
 Usage: .\forge.ps1 <verb> [args]
 
-  new      <Name> [-Frames 8|12|24] [-Size 64]   Scaffold a new project from _template
+  new      <Name> [-Frames 8|12|24] [-Size 64]   Scaffold a new legacy (grid.txt) project from _template
   build    <Name>                                Compile grids -> .ani + previews
   canvas   <Name> [-Port 5174] [-NoBrowser]      Launch Cursor Studio in the browser
+  canvas-new <Name> [-Size 64]                   Scaffold a blank studio-format project (palette.json + frames/frame_00.json)
   canvas-select <Name> [-Port 5174]              Switch a running Cursor Studio to <Name>
   canvas-stage [-Port 5174]                      Print the active project + stage (where 'generate more' would land)
   preview  <Name>                                Open preview.gif and preview_strip.png
@@ -335,6 +336,75 @@ function Invoke-CanvasSelect {
     Write-Host "studio: active project is now '$($resp.name)'" -ForegroundColor Green
 }
 
+function Invoke-CanvasNew {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [int]$Size = 64
+    )
+    # Scaffold a blank studio-format project so the user can start one without
+    # round-tripping through chat. The studio's project picker surfaces it the
+    # moment palette.json appears (via the file watcher). From there, paint
+    # frame_00.json directly in the in-canvas editor, or ask Claude to drop
+    # 4 first-frame candidates into candidates/first/.
+    if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        throw "forge canvas-new: '$Name' is invalid. Use letters, digits, . _ - only; must start with a letter or digit."
+    }
+    if ($Size -lt 8 -or $Size -gt 256) {
+        throw "forge canvas-new: -Size must be 8..256 (got $Size)"
+    }
+    $projDir = Join-Path $Script:RepoRoot "projects\$Name"
+    if (Test-Path $projDir) { throw "forge canvas-new: '$Name' already exists at $projDir" }
+
+    $framesDir = Join-Path $projDir 'frames'
+    New-Item -ItemType Directory -Path $framesDir -Force | Out-Null
+
+    # Starter palette. Index 0 = transparent (required by the studio's pixel
+    # schema; 0 always means "skip this cell"). 1..3 give the editor sensible
+    # paintable swatches on first open — extend or replace by editing
+    # palette.json directly.
+    $palette = [ordered]@{
+        version = 1
+        colors = @(
+            [ordered]@{ index = 0; rgba = '00000000' }
+            [ordered]@{ index = 1; rgba = 'FFFFFFFF' }
+            [ordered]@{ index = 2; rgba = '1A1A1AFF' }
+            [ordered]@{ index = 3; rgba = 'FF6B6BFF' }
+        )
+    }
+    $palettePath = Join-Path $projDir 'palette.json'
+    # PowerShell 5.1's `Set-Content -Encoding utf8` writes a UTF-8 BOM, which
+    # Node's JSON.parse rejects with `Unexpected token '﻿'`. Use
+    # WriteAllText with a BOM-less UTF8Encoding so the studio server can
+    # consume the file directly.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($palettePath, ($palette | ConvertTo-Json -Depth 5), $utf8NoBom)
+
+    # Empty frame_00.json: Size x Size grid of zeros (all transparent),
+    # hotspot at the centre. The PixelEditor falls back to this frame
+    # whenever the active stage has no candidates yet.
+    $pixels = @(
+        for ($y = 0; $y -lt $Size; $y++) {
+            ,(@(0) * $Size)
+        }
+    )
+    $centre = [int][math]::Floor($Size / 2)
+    $frame = [ordered]@{
+        version = 1
+        width   = $Size
+        height  = $Size
+        hotspot = [ordered]@{ x = $centre; y = $centre }
+        pixels  = $pixels
+    }
+    $framePath = Join-Path $framesDir 'frame_00.json'
+    [System.IO.File]::WriteAllText($framePath, ($frame | ConvertTo-Json -Depth 5 -Compress), $utf8NoBom)
+
+    Write-Host ("Created studio project '{0}' at {1}x{1}." -f $Name, $Size) -ForegroundColor Green
+    Write-Host "  -> $projDir"
+    Write-Host "If 'forge canvas' is already running, the picker will surface '$Name' live."
+    Write-Host "Switch the active project:  .\forge.ps1 canvas-select $Name"
+    Write-Host "Or launch the studio fresh: .\forge.ps1 canvas $Name"
+}
+
 function Invoke-CanvasStage {
     param([int]$Port = 5174)
     # Hits the running studio server's GET /api/active-stage endpoint so
@@ -380,6 +450,12 @@ switch ($Verb) {
         if (-not $Name) { throw 'forge canvas: <Name> is required' }
         $p = if ($PSBoundParameters.ContainsKey('Port')) { $Port } else { 5174 }
         Invoke-Canvas -Name $Name -Port $p -NoBrowser:$NoBrowser
+        exit 0
+    }
+    'canvas-new' {
+        if (-not $Name) { throw 'forge canvas-new: <Name> is required' }
+        $s = if ($PSBoundParameters.ContainsKey('Size')) { $Size } else { 64 }
+        Invoke-CanvasNew -Name $Name -Size $s
         exit 0
     }
     'canvas-select' {

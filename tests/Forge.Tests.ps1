@@ -182,6 +182,66 @@ Test-Case 'forge build accepts a JSON-frame project (palette.json + frames/*.jso
     } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
 }
 
+Test-Case 'forge canvas-new scaffolds a studio-format project with BOM-less JSON' {
+    $tmpRepo = New-TempDir
+    try {
+        Copy-Item -Recurse "$PSScriptRoot\..\lib" (Join-Path $tmpRepo 'lib')
+        Copy-Item "$PSScriptRoot\..\forge.ps1" (Join-Path $tmpRepo 'forge.ps1')
+        Push-Location $tmpRepo
+        try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File .\forge.ps1 canvas-new SandboxDot -Size 32 2>&1 | Out-Null
+            Assert-True (Test-Path 'projects\SandboxDot\palette.json')         'palette.json created'
+            Assert-True (Test-Path 'projects\SandboxDot\frames\frame_00.json') 'frame_00.json created'
+            # No UTF-8 BOM — the studio's JSON.parse rejects `﻿`. We
+            # check the leading bytes directly because that is exactly the
+            # failure mode (PS 5.1's `-Encoding utf8` writes a BOM).
+            $palBytes = [System.IO.File]::ReadAllBytes((Join-Path $tmpRepo 'projects\SandboxDot\palette.json'))
+            Assert-True ($palBytes[0] -ne 0xEF) 'palette.json has no UTF-8 BOM'
+            $frameBytes = [System.IO.File]::ReadAllBytes((Join-Path $tmpRepo 'projects\SandboxDot\frames\frame_00.json'))
+            Assert-True ($frameBytes[0] -ne 0xEF) 'frame_00.json has no UTF-8 BOM'
+            # Round-trip through ConvertFrom-Json to prove the bytes really parse.
+            $pal = Get-Content (Join-Path $tmpRepo 'projects\SandboxDot\palette.json') -Raw | ConvertFrom-Json
+            Assert-Equal 1 $pal.version  'palette version 1'
+            Assert-Equal 4 $pal.colors.Count 'palette has 4 starter colors'
+            Assert-Equal '00000000' $pal.colors[0].rgba 'index 0 is transparent'
+            $frm = Get-Content (Join-Path $tmpRepo 'projects\SandboxDot\frames\frame_00.json') -Raw | ConvertFrom-Json
+            Assert-Equal 32 $frm.width   'frame width 32'
+            Assert-Equal 32 $frm.height  'frame height 32'
+            Assert-Equal 16 $frm.hotspot.x 'hotspot x at center'
+            Assert-Equal 16 $frm.hotspot.y 'hotspot y at center'
+            Assert-Equal 32 $frm.pixels.Count    '32 rows'
+            Assert-Equal 32 $frm.pixels[0].Count '32 columns'
+            Assert-Equal 0  $frm.pixels[0][0]    'all-zero pixels'
+        } finally { Pop-Location }
+    } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
+}
+
+Test-Case 'forge canvas-new rejects path-traversal names and re-scaffolds of existing projects' {
+    $tmpRepo = New-TempDir
+    try {
+        Copy-Item -Recurse "$PSScriptRoot\..\lib" (Join-Path $tmpRepo 'lib')
+        Copy-Item "$PSScriptRoot\..\forge.ps1" (Join-Path $tmpRepo 'forge.ps1')
+        Push-Location $tmpRepo
+        try {
+            # Invoke forge.ps1 in-process so we can try/catch the throws
+            # directly. Going through `powershell -File` is brittle here:
+            # the runner sets `$ErrorActionPreference = 'Stop'`, and in
+            # PS 5.1 the child exe's stderr re-enters the parent host as
+            # NativeCommandError records that re-throw into the test.
+            $threw = $false
+            try { & .\forge.ps1 canvas-new '../escape' | Out-Null } catch { $threw = $true }
+            Assert-True $threw                                            'threw on bad name'
+            Assert-True (-not (Test-Path 'projects\escape'))              'no escape dir created'
+            # First scaffold succeeds, second on the same name fails.
+            & .\forge.ps1 canvas-new Existing | Out-Null
+            Assert-True (Test-Path 'projects\Existing\palette.json')      'palette created'
+            $threw = $false
+            try { & .\forge.ps1 canvas-new Existing | Out-Null } catch { $threw = $true }
+            Assert-True $threw                                            'threw on duplicate'
+        } finally { Pop-Location }
+    } finally { Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue }
+}
+
 Test-Case 'forge build: JSON-frame project and equivalent grid.txt project produce identical bitmaps' {
     $tmpRepo = New-TempDir
     try {

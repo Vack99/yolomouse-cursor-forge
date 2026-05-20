@@ -72,6 +72,19 @@ galleries, tweening, and `.ani` integration arrive in later issues.
 - Reference project: `projects/TracerDot/` — a 16×16 arrow committed as the
   tracer fixture; opening `forge canvas TracerDot` is the smoke test for the
   whole stack.
+- **Starting a new studio project:** `forge canvas-new <Name> [-Size 64]`
+  scaffolds the minimum studio-format skeleton — `palette.json` (transparent
+  + white + black + red starter) and `frames/frame_00.json` (Size×Size blank
+  grid, centre hotspot). The running studio's file watcher picks it up live;
+  no need to relaunch. Either edit `frame_00.json` directly with the in-canvas
+  pencil or ask Claude to drop first-frame candidates into
+  `candidates/first/`. (`forge new` still exists but scaffolds the legacy
+  `grid.txt` format, which the studio filters out — don't use it for studio
+  work.)
+- **JSON files must be BOM-less.** `Set-Content -Encoding utf8` in
+  PowerShell 5.1 writes a UTF-8 BOM which Node's `JSON.parse` rejects with
+  `Unexpected token '﻿'`. Use `[System.IO.File]::WriteAllText($path, $json,
+  (New-Object System.Text.UTF8Encoding $false))` instead.
 
 ## Authoring paths
 
