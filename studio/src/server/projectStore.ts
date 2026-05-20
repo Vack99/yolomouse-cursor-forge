@@ -10,7 +10,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parsePixelGrid, serializePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
-import { STAGES, type Recipe, type Stage } from '../lib/workflowMachine.js';
+import { STAGES, type Phase, type Recipe, type Stage } from '../lib/workflowMachine.js';
 
 export interface PaletteEntry {
   index: number;
@@ -72,16 +72,18 @@ export interface ProjectStore {
    */
   listProjects(): string[];
   /**
-   * The workflow stage a "generate N more candidates" call should currently
-   * target — derived purely from disk: the first stage whose
-   * `candidates/<stage>/lock.json` does not exist. Once `first` is locked
-   * the active stage advances to `middle`, etc. Pure read; never mutates.
+   * The workflow phase derived purely from on-disk lock markers: the first
+   * keyframe stage whose `candidates/<stage>/lock.json` does not exist, or
+   * the `'tween-ready'` post-keyframes sentinel once every keyframe stage
+   * is locked. Pure read; never mutates.
    *
    * Used by the "generate 4 more" command surface (issue #14) so Claude
    * does not have to inspect the filesystem itself before authoring more
-   * candidates.
+   * candidates, and by the canvas / `forge canvas-stage` to know once the
+   * candidate-gallery loop has exited and the tween step (#18) is what's
+   * up next.
    */
-  computeActiveStage(name: string): Stage;
+  computeActiveStage(name: string): Phase;
   /**
    * Allocate `count` fresh, sequential candidate ids for `stage`. The
    * returned ids never collide with existing candidate files or with
@@ -322,7 +324,7 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
     );
   }
 
-  function computeActiveStage(name: string): Stage {
+  function computeActiveStage(name: string): Phase {
     const dir = projectDir(name);
     // Walk the workflow's stage order; the first stage without a lock
     // marker is the active one. STAGES is the single source of truth for
@@ -332,9 +334,11 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
       const lockPath = path.join(dir, 'candidates', stage, LOCK_MARKER_FILE);
       if (!fs.existsSync(lockPath)) return stage;
     }
-    // Every known stage is locked. Until tweening exists (#18) the final
-    // stage in the order is the right answer — there is no "after" yet.
-    return STAGES[STAGES.length - 1]!;
+    // Every keyframe stage is locked — the candidate-gallery loop is done
+    // and we are in the post-keyframes phase where #18's tween step picks
+    // up. Reporting 'tween-ready' lets callers (Claude, the canvas) see
+    // that shift without re-reading individual lock markers.
+    return 'tween-ready';
   }
 
   function allocateCandidateIds(name: string, stage: Stage, count: number): string[] {

@@ -635,6 +635,25 @@ describe('projectStore.computeActiveStage', () => {
     expect(store.computeActiveStage('AfterMiddle')).toBe('last');
   });
 
+  it('returns "tween-ready" once every keyframe stage is locked', () => {
+    // All three keyframes are frozen — the candidate-gallery loop is done
+    // and #18's tween step is what's queued up next. Reporting
+    // 'tween-ready' lets the canvas / `forge canvas-stage` surface that
+    // shift without inspecting individual lock markers.
+    writeProject('AllLocked', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/lock.json': { candidateId: 'candidate_00', recipe: {} },
+      'candidates/middle/candidate_00.json': blank,
+      'candidates/middle/lock.json': { candidateId: 'candidate_00', recipe: {} },
+      'candidates/last/candidate_00.json': blank,
+      'candidates/last/lock.json': { candidateId: 'candidate_00', recipe: {} },
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.computeActiveStage('AllLocked')).toBe('tween-ready');
+  });
+
   it('rejects path-traversal in the project name', () => {
     const store = createProjectStore({ repoRoot: tmpRoot });
     expect(() => store.computeActiveStage('../escape')).toThrow(/invalid project name/i);
@@ -808,6 +827,185 @@ describe('projectStore — middle stage', () => {
       'utf8',
     );
     expect(store.readCandidates('MidFilter', 'middle').map((c) => c.id)).toEqual([
+      'candidate_00',
+      'candidate_01',
+    ]);
+  });
+});
+
+// Last-stage support — issue #17.
+//
+// Symmetric to middle: candidates live in candidates/last/, the stage
+// parameter typing keeps a stray edit out of the wrong directory, and
+// writeLock freezes the locked candidate into frames/frame_last.json (a
+// placeholder until #18's tween step computes the final per-frame
+// indices). The reserved lock.json / recipe.json markers under
+// candidates/last/ are filtered the same way as the other stages.
+
+describe('projectStore — last stage', () => {
+  const palette = { version: 1, colors: [
+    { index: 0, rgba: '00000000' },
+    { index: 1, rgba: 'FF0000FF' },
+  ] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 2, height: 2 }));
+
+  function lockedMiddleProject(name: string): string {
+    // A project where first + middle are both locked and the last stage
+    // now has two candidates — the typical state at the start of #17's
+    // flow. frame_00.json and frame_middle.json are both frozen.
+    const firstGrid = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const middleGrid = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 0, 1);
+    const lastA = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 1, 1);
+    const lastB = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 1, 1);
+    const firstRecipe = extractRecipe(firstGrid);
+    const middleRecipe = extractRecipe(middleGrid);
+    writeProject(name, {
+      'palette.json': palette,
+      'frames/frame_00.json': serializePixelGrid(firstGrid),
+      'frames/frame_middle.json': serializePixelGrid(middleGrid),
+      'candidates/first/candidate_00.json': serializePixelGrid(firstGrid),
+      'candidates/first/lock.json': { candidateId: 'candidate_00', recipe: firstRecipe },
+      'candidates/first/recipe.json': firstRecipe,
+      'candidates/middle/candidate_00.json': serializePixelGrid(middleGrid),
+      'candidates/middle/lock.json': { candidateId: 'candidate_00', recipe: middleRecipe },
+      'candidates/middle/recipe.json': middleRecipe,
+      'candidates/last/candidate_00.json': serializePixelGrid(lastA),
+      'candidates/last/candidate_01.json': serializePixelGrid(lastB),
+    });
+    return path.join(tmpRoot, 'projects', name);
+  }
+
+  it('readCandidates returns last-stage candidates from candidates/last/', () => {
+    lockedMiddleProject('LastRead');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const candidates = store.readCandidates('LastRead', 'last');
+    expect(candidates.map((c) => c.id)).toEqual(['candidate_00', 'candidate_01']);
+  });
+
+  it('allocateCandidateIds runs on the last directory independently of first / middle', () => {
+    lockedMiddleProject('LastAlloc');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    // first has one candidate, middle has one, last has two — each stage
+    // walks its own sequence.
+    expect(store.allocateCandidateIds('LastAlloc', 'last', 2)).toEqual([
+      'candidate_02',
+      'candidate_03',
+    ]);
+  });
+
+  it('appendCandidates writes to candidates/last/ and returns the new ids', () => {
+    const projectDir = lockedMiddleProject('LastAppend');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const ids = store.appendCandidates('LastAppend', 'last', [g]);
+    expect(ids).toEqual(['candidate_02']);
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(projectDir, 'candidates', 'last', 'candidate_02.json'),
+        'utf8',
+      ),
+    );
+    expect(raw).toEqual(serializePixelGrid(g));
+    // Earlier stages untouched.
+    expect(
+      fs.existsSync(path.join(projectDir, 'candidates', 'middle', 'candidate_00.json')),
+    ).toBe(true);
+  });
+
+  it('writeCandidate persists to candidates/last/<id>.json', () => {
+    const projectDir = lockedMiddleProject('LastWriteCand');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const edited = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 0, 1);
+    store.writeCandidate('LastWriteCand', 'last', 'candidate_00', edited);
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(projectDir, 'candidates', 'last', 'candidate_00.json'),
+        'utf8',
+      ),
+    );
+    expect(raw).toEqual(serializePixelGrid(edited));
+  });
+
+  it('writeLock + readLock round-trips a last-stage lock and freezes frame_last.json', () => {
+    const projectDir = lockedMiddleProject('LastLock');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const lastGrid = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 1, 1);
+    const recipe = extractRecipe(lastGrid);
+    store.writeLock('LastLock', 'last', {
+      candidateId: 'candidate_01',
+      grid: lastGrid,
+      recipe,
+    });
+
+    // Marker + recipe land in candidates/last/.
+    const lockRaw = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'candidates', 'last', 'lock.json'), 'utf8'),
+    );
+    expect(lockRaw.candidateId).toBe('candidate_01');
+    expect(lockRaw.recipe).toEqual(recipe);
+    const recipeRaw = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'candidates', 'last', 'recipe.json'), 'utf8'),
+    );
+    expect(recipeRaw).toEqual(recipe);
+
+    // Round-trip via readLock.
+    expect(store.readLock('LastLock', 'last')).toEqual({
+      candidateId: 'candidate_01',
+      recipe,
+    });
+
+    // The frame_last.json placeholder carries the locked grid. The tween
+    // step (#18) will rewrite the per-frame layout once the user picks a
+    // frame count; until then the placeholder is the canonical last frame.
+    const lastFrame = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'frames', 'frame_last.json'), 'utf8'),
+    );
+    expect(lastFrame).toEqual(serializePixelGrid(lastGrid));
+
+    // Earlier stages' canonical frames + locks untouched.
+    expect(
+      fs.existsSync(path.join(projectDir, 'frames', 'frame_00.json')),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(projectDir, 'frames', 'frame_middle.json')),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(projectDir, 'candidates', 'first', 'lock.json')),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(projectDir, 'candidates', 'middle', 'lock.json')),
+    ).toBe(true);
+  });
+
+  it('refuses to overwrite an existing last lock', () => {
+    lockedMiddleProject('LastRelock');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const recipe = extractRecipe(g);
+    store.writeLock('LastRelock', 'last', { candidateId: 'candidate_00', grid: g, recipe });
+    expect(() =>
+      store.writeLock('LastRelock', 'last', {
+        candidateId: 'candidate_01',
+        grid: g,
+        recipe,
+      }),
+    ).toThrow(/already locked/i);
+  });
+
+  it('excludes lock.json + recipe.json from last-stage candidate listing', () => {
+    const projectDir = lockedMiddleProject('LastFilter');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    fs.writeFileSync(
+      path.join(projectDir, 'candidates', 'last', 'lock.json'),
+      JSON.stringify({ candidateId: 'candidate_00', recipe: {} }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(projectDir, 'candidates', 'last', 'recipe.json'),
+      JSON.stringify({ width: 2, height: 2 }),
+      'utf8',
+    );
+    expect(store.readCandidates('LastFilter', 'last').map((c) => c.id)).toEqual([
       'candidate_00',
       'candidate_01',
     ]);
