@@ -307,3 +307,177 @@ describe('workflowMachine — candidates-loaded with lock metadata', () => {
     ).toThrow(/not in candidate set/i);
   });
 });
+
+// Issue #15 — middle-frame stage.
+//
+// Once the `first` stage is locked the reducer advances to `middle`. The same
+// `candidates-loaded` / `select` / `lock` actions apply to the new stage; a
+// successful lock on `middle` advances to `last`. Crucially, the `first`
+// stage's locked metadata must persist through all middle-stage transitions
+// — it is the recipe driving middle-candidate generation and the truth for
+// the first frame in the eventual tween.
+
+describe('workflowMachine — middle stage', () => {
+  const firstRecipe: Recipe = extractRecipe(gridWithPixels());
+
+  function preloadFirstLocked(): WorkflowState {
+    // Set up a state where the first stage is already locked — i.e. we are
+    // sitting at the start of the middle stage with no middle candidates yet.
+    return reduceWorkflow(createWorkflowState(), {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_00', recipe: firstRecipe },
+    });
+  }
+
+  it('initial state shape includes a middle slot with no candidates and no selection', () => {
+    const s = createWorkflowState();
+    expect(s.candidates.middle).toEqual([]);
+    expect(s.selected.middle).toBeUndefined();
+    expect(s.locked.middle).toBeUndefined();
+  });
+
+  it('records middle-stage candidates via candidates-loaded after the first lock', () => {
+    let s = preloadFirstLocked();
+    expect(s.stage).toBe('middle');
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01', 'candidate_02'],
+    });
+    expect(s.candidates.middle).toEqual(['candidate_00', 'candidate_01', 'candidate_02']);
+    expect(s.selected.middle).toBe('candidate_00');
+    // First stage stays locked through middle-stage transitions.
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    expect(s.candidates.first).toEqual(['candidate_00', 'candidate_01']);
+  });
+
+  it('selects a middle candidate when it is in the middle candidate set', () => {
+    let s = preloadFirstLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01', 'candidate_02'],
+    });
+    s = reduceWorkflow(s, { type: 'select', stage: 'middle', id: 'candidate_02' });
+    expect(s.selected.middle).toBe('candidate_02');
+    // Selecting in middle does not disturb the first stage's selection.
+    expect(s.selected.first).toBe('candidate_00');
+  });
+
+  it('locks a middle candidate and advances the stage to last', () => {
+    let s = preloadFirstLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const midRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'middle',
+      id: 'candidate_01',
+      recipe: midRecipe,
+    });
+    expect(s.stage).toBe('last');
+    expect(s.locked.middle).toEqual({ id: 'candidate_01', recipe: midRecipe });
+    // Locked first-stage data is untouched — both keyframes are now frozen.
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    // Candidate set stays browsable after the lock (PRD: nothing discarded).
+    expect(s.candidates.middle).toEqual(['candidate_00', 'candidate_01']);
+  });
+
+  it('rejects a select on the middle stage when no middle candidates are loaded', () => {
+    const s = preloadFirstLocked();
+    expect(() =>
+      reduceWorkflow(s, { type: 'select', stage: 'middle', id: 'candidate_00' }),
+    ).toThrow(/not in candidate set/i);
+  });
+
+  it('rejects locking a middle candidate that is not in the middle candidate set', () => {
+    let s = preloadFirstLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00'],
+    });
+    const midRecipe: Recipe = extractRecipe(gridWithPixels());
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'middle',
+        id: 'candidate_99',
+        recipe: midRecipe,
+      }),
+    ).toThrow(/not in candidate set/i);
+  });
+
+  it('rejects a second lock on the middle stage', () => {
+    let s = preloadFirstLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const midRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'middle',
+      id: 'candidate_00',
+      recipe: midRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'lock',
+        stage: 'middle',
+        id: 'candidate_01',
+        recipe: midRecipe,
+      }),
+    ).toThrow(/already locked/i);
+  });
+
+  it('rejects further middle-stage select transitions once locked', () => {
+    let s = preloadFirstLocked();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01'],
+    });
+    const midRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'lock',
+      stage: 'middle',
+      id: 'candidate_00',
+      recipe: midRecipe,
+    });
+    expect(() =>
+      reduceWorkflow(s, { type: 'select', stage: 'middle', id: 'candidate_01' }),
+    ).toThrow(/locked/i);
+  });
+
+  it('rehydrates a middle-stage lock from disk and advances to last', () => {
+    // Both stages already locked on disk — the reducer should land on `last`
+    // after replaying the two candidates-loaded events.
+    let s = createWorkflowState();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: firstRecipe },
+    });
+    const midRecipe: Recipe = extractRecipe(gridWithPixels());
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'middle',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_01', recipe: midRecipe },
+    });
+    expect(s.stage).toBe('last');
+    expect(s.locked.first).toEqual({ id: 'candidate_00', recipe: firstRecipe });
+    expect(s.locked.middle).toEqual({ id: 'candidate_01', recipe: midRecipe });
+    // Auto-selection on rehydration picks the locked id so the gallery
+    // opens on the frozen frame.
+    expect(s.selected.middle).toBe('candidate_01');
+  });
+});

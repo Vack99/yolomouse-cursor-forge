@@ -15,7 +15,7 @@
 
 import type { PixelGrid } from './pixelGrid.js';
 
-export type Stage = 'first' | 'middle';
+export type Stage = 'first' | 'middle' | 'last';
 
 /**
  * Composition recipe — metadata captured at lock time so later stages can
@@ -81,17 +81,27 @@ export type WorkflowAction =
   | { type: 'select'; stage: Stage; id: string }
   | { type: 'lock'; stage: Stage; id: string; recipe: Recipe };
 
+/**
+ * Stage ordering — single source of truth for "which stage follows which".
+ * Re-exported so filesystem adapters (project store's active-stage
+ * computation, project watcher's stage list) can read the order without
+ * re-encoding it; if the workflow ever gains a new stage (e.g. #18 tween),
+ * adding it here propagates everywhere.
+ */
+export const STAGES: ReadonlyArray<Stage> = ['first', 'middle', 'last'];
+
 const STAGE_AFTER: { readonly [S in Stage]: Stage | undefined } = {
   first: 'middle',
-  middle: undefined,
+  middle: 'last',
+  last: undefined,
 };
 
 export function createWorkflowState(): WorkflowState {
   return {
     stage: 'first',
-    candidates: { first: [], middle: [] },
-    selected: { first: undefined, middle: undefined },
-    locked: { first: undefined, middle: undefined },
+    candidates: { first: [], middle: [], last: [] },
+    selected: { first: undefined, middle: undefined, last: undefined },
+    locked: { first: undefined, middle: undefined, last: undefined },
   };
 }
 
