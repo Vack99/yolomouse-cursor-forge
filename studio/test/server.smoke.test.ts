@@ -221,9 +221,12 @@ describe('http server (smoke)', () => {
     session = mkSession(tmpRoot, 'Hello');
     server = await startServer({ store, session, distDir });
 
-    // `last` is the stage not yet wired through the HTTP surface (#17). Once
-    // that lands this test moves to a synthetic unknown stage instead.
-    const res = await fetch(`${server.url}api/projects/Hello/candidates/last`);
+    // Every keyframe stage (`first` / `middle` / `last`) is wired as of #17;
+    // a name outside that set must be rejected so the regex match cannot
+    // escape into a path-traversal candidate directory. `tween-ready` is
+    // the post-keyframes phase, not a directory — exercising it here also
+    // confirms the phase sentinel never leaks into directory routing.
+    const res = await fetch(`${server.url}api/projects/Hello/candidates/tween-ready`);
     expect(res.status).toBe(400);
   });
 
@@ -476,12 +479,18 @@ describe('http server (smoke)', () => {
     server = await startServer({ store, session, distDir });
 
     const g = createPixelGrid({ width: 1, height: 1 });
-    // `last` is the not-yet-wired stage at this point in the workflow (#17).
-    const put = await fetch(`${server.url}api/projects/CandStage/candidates/last/candidate_00`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ grid: serializePixelGrid(g) }),
-    });
+    // `tween-ready` is the post-keyframes phase sentinel; it is not a
+    // candidate directory and must not be accepted by the writeCandidate
+    // route. Exercising it here also confirms a phase value cannot smuggle
+    // through into a filesystem write.
+    const put = await fetch(
+      `${server.url}api/projects/CandStage/candidates/tween-ready/candidate_00`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ grid: serializePixelGrid(g) }),
+      },
+    );
     expect(put.status).toBe(400);
   });
 

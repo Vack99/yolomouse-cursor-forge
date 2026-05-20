@@ -15,10 +15,11 @@ import { parsePixelGrid } from '../lib/pixelGrid.js';
 /**
  * Workflow stages currently exposed through the HTTP surface. The reducer
  * and filesystem layer know about every stage in `STAGES`; this set tracks
- * which stages the UI has wired through the API at the present commit. New
- * stages join here when their slice lands (`last` arrives with #17).
+ * which stages the UI has wired through the API. As of #17 every keyframe
+ * stage is wired — `'tween-ready'` (the post-keyframes phase) is reported
+ * through /api/active-stage but is not a wired candidate-directory stage.
  */
-const WIRED_STAGES = new Set<Stage>(['first', 'middle']);
+const WIRED_STAGES = new Set<Stage>(['first', 'middle', 'last']);
 
 function asWiredStage(s: string): Stage | undefined {
   return WIRED_STAGES.has(s as Stage) ? (s as Stage) : undefined;
@@ -177,7 +178,6 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           const stageStr = decodeURIComponent(candMatch[2]!);
           const stage = asWiredStage(stageStr);
           if (stage === undefined) {
-            // `last` joins WIRED_STAGES with #17.
             sendError(res, 400, `unknown stage '${stageStr}'`);
             return;
           }
