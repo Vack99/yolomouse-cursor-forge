@@ -136,7 +136,18 @@ export function reduceWorkflow(state: WorkflowState, action: WorkflowAction): Wo
       // A locked stage's candidate list is frozen — the on-disk truth is the
       // locked candidate file; later candidate writes must not mutate the
       // reducer's view of the stage.
-      if (state.locked[action.stage] !== undefined) {
+      const existingLock = state.locked[action.stage];
+      if (existingLock !== undefined) {
+        // Idempotent rehydration: the UI replays candidates-loaded for every
+        // wired stage after each filesystem reload. When the replay matches
+        // what the reducer already knows (same lock id, with a `locked`
+        // payload carrying the same id), treat it as a no-op so the replay
+        // is safe. A replay without a `locked` payload, or with a different
+        // locked id, is a real conflict — reject it so a stale event cannot
+        // silently erase the lock.
+        if (action.locked !== undefined && action.locked.id === existingLock.id) {
+          return state;
+        }
         throw new Error(
           `workflowMachine: stage '${action.stage}' is locked; further candidates-loaded transitions are rejected`,
         );

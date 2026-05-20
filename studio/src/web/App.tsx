@@ -5,12 +5,20 @@ import {
   reduceWorkflow,
   type LockedFrame,
   type Recipe,
+  type Stage,
   type WorkflowAction,
   type WorkflowState,
 } from '../lib/workflowMachine.js';
 import { PixelCanvas } from './PixelCanvas.js';
 import { PixelEditor } from './PixelEditor.js';
 import { useReloadChannel } from './useReloadChannel.js';
+
+/**
+ * Workflow stages currently wired through the HTTP surface. Mirrors the
+ * server's WIRED_STAGES — kept in lock-step manually because the frontend
+ * bundle does not import server code. The `last` stage joins with #17.
+ */
+const UI_STAGES: ReadonlyArray<Stage> = ['first', 'middle'];
 
 interface PaletteEntry {
   index: number;
@@ -40,7 +48,7 @@ interface CandidatePayload {
 }
 
 interface CandidatesResponse {
-  stage: 'first';
+  stage: Stage;
   candidates: CandidatePayload[];
   /** Lock marker — present iff the stage has been locked on disk. */
   lock?: { candidateId: string; recipe: Recipe };
@@ -52,23 +60,51 @@ interface LoadedCandidate {
   grid: PixelGrid;
 }
 
+interface LoadedStage {
+  /** Candidate grids loaded from candidates/<stage>/. */
+  candidates: LoadedCandidate[];
+  /** Lock marker, if the stage has been locked on disk. */
+  lock: LockedFrame | undefined;
+}
+
 interface LoadedProject {
   name: string;
   palette: Palette;
   frames: Array<{ fileName: string; grid: PixelGrid }>;
   /**
-   * First-frame stage candidates loaded from disk. Empty when the project
-   * has not yet had any candidate JSON generated.
+   * Per-stage view of disk state. The reducer drives which stage's
+   * candidates the gallery currently shows; this struct keeps the loaded
+   * data for every wired stage so a stage switch is purely local.
    */
-  firstCandidates: LoadedCandidate[];
-  /** First-stage lock marker; undefined when the stage is unlocked. */
-  firstLock: LockedFrame | undefined;
+  stages: { readonly [S in Stage]: LoadedStage };
 }
 
 type State =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'ready'; project: LoadedProject };
+
+async function loadCandidates(projectName: string, stage: Stage): Promise<LoadedStage> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectName)}/candidates/${encodeURIComponent(stage)}`,
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  const payload = (await res.json()) as CandidatesResponse;
+  return {
+    candidates: payload.candidates.map((c) => ({
+      id: c.id,
+      fileName: c.fileName,
+      grid: parsePixelGrid(c.grid),
+    })),
+    lock:
+      payload.lock !== undefined
+        ? { id: payload.lock.candidateId, recipe: payload.lock.recipe }
+        : undefined,
+  };
+}
 
 async function loadActiveProject(): Promise<LoadedProject> {
   const activeRes = await fetch('/api/active-project');
@@ -82,34 +118,27 @@ async function loadActiveProject(): Promise<LoadedProject> {
   }
   const payload = (await projRes.json()) as ProjectResponse;
 
-  const candRes = await fetch(`/api/projects/${encodeURIComponent(name)}/candidates/first`);
-  if (!candRes.ok) {
-    const body = (await candRes.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${candRes.status}`);
-  }
-  const candPayload = (await candRes.json()) as CandidatesResponse;
+  // Load every wired stage in parallel — the gallery switches between them
+  // locally based on workflow.stage, so the network cost is paid once per
+  // refresh regardless of which stage the user lands on.
+  const stageResults = await Promise.all(
+    UI_STAGES.map(async (s) => [s, await loadCandidates(name, s)] as const),
+  );
+  const stages = Object.fromEntries(stageResults) as { [S in Stage]: LoadedStage };
 
   return {
     name: payload.name,
     palette: payload.palette,
     frames: payload.frames.map((f) => ({ fileName: f.fileName, grid: parsePixelGrid(f.grid) })),
-    firstCandidates: candPayload.candidates.map((c) => ({
-      id: c.id,
-      fileName: c.fileName,
-      grid: parsePixelGrid(c.grid),
-    })),
-    firstLock:
-      candPayload.lock !== undefined
-        ? { id: candPayload.lock.candidateId, recipe: candPayload.lock.recipe }
-        : undefined,
+    stages,
   };
 }
 
-async function postLock(projectName: string, candidateId: string): Promise<void> {
+async function postLock(projectName: string, stage: Stage, candidateId: string): Promise<void> {
   const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/lock`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ stage: 'first', candidateId }),
+    body: JSON.stringify({ stage, candidateId }),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -134,7 +163,7 @@ async function putFrame(projectName: string, fileName: string, grid: PixelGrid):
 
 async function putCandidate(
   projectName: string,
-  stage: 'first',
+  stage: Stage,
   id: string,
   grid: PixelGrid,
 ): Promise<void> {
@@ -185,6 +214,29 @@ export function App(): JSX.Element {
   const workflowReducer: Reducer<WorkflowState, WorkflowAction> = reduceWorkflow;
   const [workflow, dispatchWorkflow] = useReducer(workflowReducer, createWorkflowState());
 
+  /**
+   * Dispatch candidates-loaded for every wired stage. The order matters:
+   * locking `first` advances the reducer's stage from `first` to `middle`,
+   * so we must replay `first` before `middle` to land on the right stage
+   * after a page reload. UI_STAGES is already in workflow order.
+   */
+  const replayStages = useCallback((project: LoadedProject): void => {
+    // The reducer rejects further actions on a locked stage. Construct a
+    // fresh state each refresh by re-keying the project (see PixelEditor
+    // re-key below); here we lean on the reducer's idempotent rehydration —
+    // each candidates-loaded with a `locked` payload restores the same
+    // stage state regardless of how many times it fires.
+    for (const stage of UI_STAGES) {
+      const data = project.stages[stage];
+      dispatchWorkflow({
+        type: 'candidates-loaded',
+        stage,
+        ids: data.candidates.map((c) => c.id),
+        ...(data.lock !== undefined ? { locked: data.lock } : {}),
+      });
+    }
+  }, []);
+
   const refresh = useCallback((): void => {
     // Always re-read the project list at the same time as the active
     // project — a switch implies the list might also have changed
@@ -193,12 +245,7 @@ export function App(): JSX.Element {
       .then(([project, list]) => {
         setProjects(list);
         setState({ status: 'ready', project });
-        dispatchWorkflow({
-          type: 'candidates-loaded',
-          stage: 'first',
-          ids: project.firstCandidates.map((c) => c.id),
-          ...(project.firstLock !== undefined ? { locked: project.firstLock } : {}),
-        });
+        replayStages(project);
       })
       .catch((err: unknown) => {
         setState({
@@ -206,7 +253,7 @@ export function App(): JSX.Element {
           message: err instanceof Error ? err.message : String(err),
         });
       });
-  }, []);
+  }, [replayStages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,12 +262,7 @@ export function App(): JSX.Element {
         if (cancelled) return;
         setProjects(list);
         setState({ status: 'ready', project });
-        dispatchWorkflow({
-          type: 'candidates-loaded',
-          stage: 'first',
-          ids: project.firstCandidates.map((c) => c.id),
-          ...(project.firstLock !== undefined ? { locked: project.firstLock } : {}),
-        });
+        replayStages(project);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -233,7 +275,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [replayStages]);
 
   // Live filesystem sync: server pushes a `reload` frame whenever a JSON
   // frame, candidate, palette.json, or the active project itself changes.
@@ -260,30 +302,39 @@ export function App(): JSX.Element {
     [state],
   );
 
+  // The "active" stage for UI purposes is the reducer's current stage when
+  // it is wired (`first`/`middle`). If the reducer has advanced past the
+  // wired surface (`last` arriving with #17), the gallery clamps to the
+  // last wired stage so the user is not stuck on a blank screen.
+  const activeStage: Stage = UI_STAGES.includes(workflow.stage)
+    ? workflow.stage
+    : UI_STAGES[UI_STAGES.length - 1]!;
+
   const onPickCandidate = useCallback(
     (id: string): void => {
       // The reducer rejects selects on a locked stage; mirror that here so
       // a stray click cannot put the UI in an error state.
-      if (workflow.locked.first !== undefined) return;
-      dispatchWorkflow({ type: 'select', stage: 'first', id });
+      if (workflow.locked[activeStage] !== undefined) return;
+      dispatchWorkflow({ type: 'select', stage: activeStage, id });
     },
-    [workflow.locked.first],
+    [workflow.locked, activeStage],
   );
 
   const onLock = useCallback(
-    (candidateId: string): void => {
+    (stage: Stage, candidateId: string): void => {
       if (state.status !== 'ready') return;
-      postLock(state.project.name, candidateId).catch((err: unknown) => {
+      postLock(state.project.name, stage, candidateId).catch((err: unknown) => {
         setState({
           status: 'error',
           message: err instanceof Error ? err.message : String(err),
         });
       });
-      // The watcher fires reload events for lock.json / recipe.json /
-      // frames/frame_00.json which trigger refresh() over the WebSocket;
-      // refresh re-dispatches candidates-loaded with the locked payload so
-      // the reducer's view of the world matches disk. No optimistic
-      // update — the filesystem stays the single source of truth.
+      // The watcher fires reload events for the stage's lock.json,
+      // recipe.json, and the canonical-frame placeholder. Those trigger
+      // refresh() over the WebSocket; refresh re-dispatches
+      // candidates-loaded (with the locked payload) so the reducer's view
+      // matches disk. No optimistic update — the filesystem stays the
+      // single source of truth (PRD #5).
     },
     [state],
   );
@@ -318,27 +369,32 @@ export function App(): JSX.Element {
   }
 
   const { project } = state;
-  // When the first-frame stage has candidates, the gallery is the main
-  // surface. Otherwise we fall back to the first frame — useful for the
-  // tracer slice and for inspecting already-tweened animations.
-  const selectedCandidate =
-    project.firstCandidates.find((c) => c.id === workflow.selected.first) ??
-    project.firstCandidates[0];
+  const activeStageData = project.stages[activeStage];
+  const stageCandidates = activeStageData.candidates;
+  const stageLock = activeStageData.lock;
 
-  const showCandidates = project.firstCandidates.length > 0 && selectedCandidate !== undefined;
+  // The gallery shows the active stage's candidates. When the stage has no
+  // candidates yet, fall back to the first frame so the editor still has
+  // something to draw — useful for the tracer slice and for inspecting an
+  // already-tweened animation.
+  const selectedCandidate =
+    stageCandidates.find((c) => c.id === workflow.selected[activeStage]) ??
+    stageCandidates[0];
+
+  const showCandidates = stageCandidates.length > 0 && selectedCandidate !== undefined;
   const mainGrid = showCandidates ? selectedCandidate!.grid : project.frames[0]!.grid;
   const mainLabel = showCandidates ? selectedCandidate!.fileName : project.frames[0]!.fileName;
   const mainFrameFile = project.frames[0]!.fileName;
   // Editing target: the candidate when we're browsing the gallery, otherwise
-  // the underlying frame. The first-stage lock froze the selected candidate
-  // into frame_00 already, so editing the candidate after that point still
-  // writes to candidates/<id>.json — that is the manual edit surface; the
-  // recipe never overwrites it (PRD acceptance criterion 6 / #13).
+  // the underlying frame. Locking already froze the selected candidate into
+  // a canonical frame slot, so editing the candidate after that point still
+  // writes to candidates/<stage>/<id>.json — that is the manual edit
+  // surface; the recipe never overwrites it (PRD acceptance criterion 6).
   const onPersist = useCallback(
     (next: PixelGrid): void => {
       const projectName = project.name;
       const writer = showCandidates
-        ? putCandidate(projectName, 'first', selectedCandidate!.id, next)
+        ? putCandidate(projectName, activeStage, selectedCandidate!.id, next)
         : putFrame(projectName, mainFrameFile, next);
       writer.catch((err: unknown) => {
         setState({
@@ -347,16 +403,14 @@ export function App(): JSX.Element {
         });
       });
     },
-    [project.name, showCandidates, selectedCandidate, mainFrameFile],
+    [project.name, showCandidates, selectedCandidate, mainFrameFile, activeStage],
   );
-  // The Lock action only appears in the first stage, only when a candidate
-  // is selected, and only while the stage is unlocked. After the lock the
-  // button collapses to a static "Locked" badge so the gallery still tells
-  // the user which candidate became the canonical frame.
-  const firstLock = workflow.locked.first;
-  const isFirstStage = workflow.stage === 'first';
-  const canLock =
-    isFirstStage && firstLock === undefined && showCandidates && selectedCandidate !== undefined;
+  // The Lock action appears on the active stage when a candidate is
+  // selected and the stage is unlocked. Past stages' lock indicators stay
+  // visible alongside so the user sees the full chain of approved
+  // keyframes building up (PRD acceptance criterion: "the locked first
+  // frame remains indicated somewhere in context" for #15).
+  const canLock = stageLock === undefined && showCandidates && selectedCandidate !== undefined;
 
   return (
     <div className="studio">
@@ -370,26 +424,24 @@ export function App(): JSX.Element {
         <span className="studio__stage-badge" aria-label={`Workflow stage: ${workflow.stage}`}>
           Stage: {workflow.stage}
         </span>
+        <LockChain stages={UI_STAGES} project={project} activeStage={activeStage} />
         {canLock ? (
           <button
             type="button"
             className="studio__lock"
-            onClick={() => onLock(selectedCandidate!.id)}
+            onClick={() => onLock(activeStage, selectedCandidate!.id)}
           >
             Lock this candidate
           </button>
-        ) : firstLock !== undefined ? (
-          <span className="studio__lock studio__lock--locked" aria-label="First frame locked">
-            Locked: {firstLock.id}
-          </span>
         ) : null}
       </header>
       <main className="studio__stage">
         <PixelEditor
           // Re-key on the editing target so a candidate switch resets the
           // editor's local undo history — undo should not cross frame
-          // boundaries.
-          key={`${project.name}:${showCandidates ? `cand:${selectedCandidate!.id}` : `frame:${mainFrameFile}`}`}
+          // boundaries. The stage is part of the key so the editor also
+          // resets when the workflow advances to a new stage's gallery.
+          key={`${project.name}:${activeStage}:${showCandidates ? `cand:${selectedCandidate!.id}` : `frame:${mainFrameFile}`}`}
           grid={mainGrid}
           palette={project.palette}
           pixelSize={16}
@@ -398,14 +450,45 @@ export function App(): JSX.Element {
       </main>
       {showCandidates ? (
         <CandidateStrip
-          candidates={project.firstCandidates}
+          stage={activeStage}
+          candidates={stageCandidates}
           palette={project.palette}
           selectedId={selectedCandidate!.id}
-          lockedId={firstLock?.id}
+          lockedId={stageLock?.id}
           onPick={onPickCandidate}
         />
       ) : null}
     </div>
+  );
+}
+
+interface LockChainProps {
+  stages: ReadonlyArray<Stage>;
+  project: LoadedProject;
+  activeStage: Stage;
+}
+
+/**
+ * Read-only chain of "Locked: <id>" badges, one per wired stage that has
+ * a lock marker on disk. Shows the user the chain of approved keyframes
+ * that have built up — PRD acceptance criterion for #15: "the locked
+ * first frame remains indicated somewhere in context" when the middle
+ * stage is active. Stays trivial — no interactivity beyond the badge.
+ */
+function LockChain({ stages, project, activeStage }: LockChainProps): JSX.Element | null {
+  const locked = stages.filter((s) => s !== activeStage && project.stages[s].lock !== undefined);
+  if (locked.length === 0) return null;
+  return (
+    <span className="studio__lock-chain" aria-label="Previously locked stages">
+      {locked.map((s) => {
+        const lock = project.stages[s].lock!;
+        return (
+          <span key={s} className="studio__lock studio__lock--locked">
+            {s}: {lock.id}
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
@@ -444,6 +527,7 @@ function ProjectPicker({ projects, active, onPick }: ProjectPickerProps): JSX.El
 }
 
 interface CandidateStripProps {
+  stage: Stage;
   candidates: LoadedCandidate[];
   palette: Palette;
   selectedId: string;
@@ -462,6 +546,7 @@ interface CandidateStripProps {
  * crosshair visible at thumbnail scale.
  */
 function CandidateStrip({
+  stage,
   candidates,
   palette,
   selectedId,
@@ -469,7 +554,7 @@ function CandidateStrip({
   onPick,
 }: CandidateStripProps): JSX.Element {
   return (
-    <footer className="studio__strip" role="tablist" aria-label="First-frame candidates">
+    <footer className="studio__strip" role="tablist" aria-label={`${stage}-frame candidates`}>
       {candidates.map((c) => {
         const isActive = c.id === selectedId;
         const isLocked = c.id === lockedId;

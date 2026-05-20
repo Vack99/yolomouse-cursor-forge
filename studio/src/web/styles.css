@@ -233,6 +233,12 @@ body {
   background: rgba(95, 208, 197, 0.06);
 }
 
+.studio__lock-chain {
+  display: inline-flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
 .studio__editor {
   display: flex;
   flex-direction: column;

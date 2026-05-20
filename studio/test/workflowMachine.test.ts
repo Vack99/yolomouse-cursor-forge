@@ -306,6 +306,48 @@ describe('workflowMachine — candidates-loaded with lock metadata', () => {
       }),
     ).toThrow(/not in candidate set/i);
   });
+
+  // Rehydrating a stage that is already locked with the same id should be a
+  // no-op — replay (on every WS reload) must be idempotent so the UI can
+  // safely re-dispatch candidates-loaded for every wired stage after each
+  // refresh without manually tracking which stages have already been seen.
+  it('treats candidates-loaded with a matching lock as a no-op when the stage is already locked', () => {
+    let s = createWorkflowState();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_00', recipe: sampleRecipe },
+    });
+    // Replay the same action — must not throw and must yield equal state.
+    const replayed = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00', 'candidate_01'],
+      locked: { id: 'candidate_00', recipe: sampleRecipe },
+    });
+    expect(replayed).toEqual(s);
+  });
+
+  it('still rejects candidates-loaded without a lock payload when the stage is locked', () => {
+    // The reducer must still catch the actual bug case — a candidates-loaded
+    // for a locked stage that does not carry the lock metadata is a stale
+    // event that would silently erase the lock.
+    let s = createWorkflowState();
+    s = reduceWorkflow(s, {
+      type: 'candidates-loaded',
+      stage: 'first',
+      ids: ['candidate_00'],
+      locked: { id: 'candidate_00', recipe: sampleRecipe },
+    });
+    expect(() =>
+      reduceWorkflow(s, {
+        type: 'candidates-loaded',
+        stage: 'first',
+        ids: ['candidate_00', 'candidate_01'],
+      }),
+    ).toThrow(/locked/i);
+  });
 });
 
 // Issue #15 — middle-frame stage.
