@@ -139,6 +139,34 @@ describe('projectWatcher', () => {
     expect(frameEvents.length).toBe(1);
   });
 
+  it('emits a candidate-changed event when a JSON file lands under candidates/first/', async () => {
+    const projectDir = scaffold('Hello');
+    // The candidates/first/ directory does not exist at scaffold time — the
+    // watcher must still notice files that appear there later.
+    fs.mkdirSync(path.join(projectDir, 'candidates', 'first'), { recursive: true });
+
+    const events: ReloadEvent[] = [];
+    watcher = createProjectWatcher({ projectDir, debounceMs: 30 });
+    watcher.onChange((e) => events.push(e));
+
+    fs.writeFileSync(
+      path.join(projectDir, 'candidates', 'first', 'candidate_00.json'),
+      '{"version":1,"width":1,"height":1,"hotspot":{"x":0,"y":0},"pixels":[[1]]}',
+      'utf8',
+    );
+
+    const got = await waitFor(
+      () => events,
+      (es) => es.some((e) => e.kind === 'candidate'),
+    );
+    const candidateEvent = got.find((e) => e.kind === 'candidate');
+    expect(candidateEvent).toMatchObject({
+      kind: 'candidate',
+      stage: 'first',
+      fileName: 'candidate_00.json',
+    });
+  });
+
   it('stops emitting after close()', async () => {
     const projectDir = scaffold('Hello');
     const events: ReloadEvent[] = [];
