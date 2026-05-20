@@ -86,6 +86,67 @@ export function createApp(opts: ServerOptions): http.RequestListener {
           return;
         }
 
+        // GET /api/active-stage -> { project, stage }
+        // The "where would the next 'generate 4 more' batch land?" query
+        // (#14). Stage is derived purely from disk so the answer is the
+        // same whether the caller is the canvas, forge.ps1, or Claude.
+        if (pathname === '/api/active-stage' && req.method === 'GET') {
+          try {
+            const project = session.getActiveProject();
+            const stage = store.computeActiveStage(project);
+            sendJson(res, 200, { project, stage });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            sendError(res, 500, msg);
+          }
+          return;
+        }
+
+        // POST /api/projects/:name/candidates/:stage { grids: [...] } -> { stage, ids }
+        // The "generate N more" command surface (#14). The body carries one
+        // or more pixel-grid payloads (same shape parsePixelGrid accepts);
+        // the server allocates fresh sequential candidate ids that do not
+        // collide with anything on disk and writes each grid. Returns the
+        // assigned ids in order so callers know which file they got. The
+        // file watcher emits one 'candidate' reload event per write so the
+        // gallery refreshes via the same path it uses for any other change.
+        const candAppendMatch = /^\/api\/projects\/([^/]+)\/candidates\/([^/]+)$/.exec(pathname);
+        if (candAppendMatch && req.method === 'POST') {
+          const requested = decodeURIComponent(candAppendMatch[1]!);
+          const stageStr = decodeURIComponent(candAppendMatch[2]!);
+          if (stageStr !== 'first') {
+            sendError(res, 400, `unknown stage '${stageStr}'`);
+            return;
+          }
+          let body: { grids?: unknown };
+          try {
+            // Allow larger bodies — four 64×64 grids serialised JSON adds up.
+            const raw = await readBody(req, 4 * 1024 * 1024);
+            body = JSON.parse(raw) as { grids?: unknown };
+          } catch {
+            sendError(res, 400, 'body must be valid JSON');
+            return;
+          }
+          if (!Array.isArray(body.grids)) {
+            sendError(res, 400, "body must include a 'grids' array");
+            return;
+          }
+          if (body.grids.length === 0) {
+            sendError(res, 400, "body.grids must contain at least one grid");
+            return;
+          }
+          try {
+            const grids = body.grids.map((g) => parsePixelGrid(g));
+            const ids = store.appendCandidates(requested, stageStr, grids);
+            sendJson(res, 200, { stage: stageStr, ids });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = /not found/i.test(msg) ? 404 : 400;
+            sendError(res, status, msg);
+          }
+          return;
+        }
+
         // GET /api/projects/:name/candidates/:stage -> { stage, candidates, lock? }
         // Returns every candidate grid for the requested workflow stage of
         // the named project, plus the lock marker when the stage has been
