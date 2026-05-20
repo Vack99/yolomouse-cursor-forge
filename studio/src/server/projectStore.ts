@@ -10,7 +10,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parsePixelGrid, serializePixelGrid, type PixelGrid } from '../lib/pixelGrid.js';
-import type { Recipe, Stage } from '../lib/workflowMachine.js';
+import { STAGES, type Recipe, type Stage } from '../lib/workflowMachine.js';
 
 export interface PaletteEntry {
   index: number;
@@ -173,16 +173,19 @@ const RECIPE_FILE = 'recipe.json';
 const STAGE_RESERVED_FILES = new Set<string>([LOCK_MARKER_FILE, RECIPE_FILE]);
 
 /**
- * Filename of the canonical frame produced by locking `stage`. Only `first`
- * is wired today (#12); later issues add middle (#15 → frame_NN where NN is
- * the middle index) and last (#17 → final frame index). Until the workflow
- * knows the chosen frame count, the middle/last positions are placeholders
- * that get rewritten by the tween step (#18) — `first` is the only stage
- * with a fixed canonical position right now.
+ * Filename of the canonical frame produced by locking `stage`. `first` is
+ * always frame_00 — the first frame of the animation, regardless of the
+ * eventual total frame count. `middle` and `last` use named placeholders
+ * (`frame_middle.json` / `frame_last.json`) until the tween step (#18)
+ * computes their final indices from the chosen frame count and rewrites
+ * the full frame sequence. The placeholders give the file watcher a stable
+ * filename per stage so a middle-stage lock fires a deterministic
+ * `frame_middle.json` reload event.
  */
-const STAGE_FRAME_FILE: { readonly [S in Stage]: string | undefined } = {
+const STAGE_FRAME_FILE: { readonly [S in Stage]: string } = {
   first: 'frame_00.json',
-  middle: undefined,
+  middle: 'frame_middle.json',
+  last: 'frame_last.json',
 };
 
 export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectStore {
@@ -278,11 +281,6 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
       throw new Error(`projectStore: stage '${stage}' is already locked at ${lockPath}`);
     }
     const frameFile = STAGE_FRAME_FILE[stage];
-    if (frameFile === undefined) {
-      // Defensive: keep the error surface narrow until later issues wire
-      // middle/last canonical positions.
-      throw new Error(`projectStore: stage '${stage}' has no canonical frame slot yet`);
-    }
     const framesDir = path.join(dir, 'frames');
     fs.mkdirSync(framesDir, { recursive: true });
 
@@ -306,20 +304,17 @@ export function createProjectStore({ repoRoot }: ProjectStoreOptions): ProjectSt
 
   function computeActiveStage(name: string): Stage {
     const dir = projectDir(name);
-    // Walk the stage order; the first unlocked stage is the active one.
-    // `STAGE_AFTER` (and friends) live in workflowMachine, so we duplicate
-    // the order locally to avoid pulling reducer guts into the filesystem
-    // adapter. When middle/last are wired (#15 / #17) extend this array
-    // alongside the workflow machine's Stage union — the type checker
-    // ensures we don't drift.
-    const order: ReadonlyArray<Stage> = ['first', 'middle'];
-    for (const stage of order) {
+    // Walk the workflow's stage order; the first stage without a lock
+    // marker is the active one. STAGES is the single source of truth for
+    // ordering (defined alongside the reducer), so this stays in sync with
+    // STAGE_AFTER automatically when a new stage is added.
+    for (const stage of STAGES) {
       const lockPath = path.join(dir, 'candidates', stage, LOCK_MARKER_FILE);
       if (!fs.existsSync(lockPath)) return stage;
     }
     // Every known stage is locked. Until tweening exists (#18) the final
     // stage in the order is the right answer — there is no "after" yet.
-    return order[order.length - 1]!;
+    return STAGES[STAGES.length - 1]!;
   }
 
   function allocateCandidateIds(name: string, stage: Stage, count: number): string[] {

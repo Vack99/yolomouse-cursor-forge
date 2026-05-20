@@ -622,8 +622,194 @@ describe('projectStore.computeActiveStage', () => {
     expect(store.computeActiveStage('AfterFirst')).toBe('middle');
   });
 
+  it('returns "last" once the middle stage is also locked', () => {
+    writeProject('AfterMiddle', {
+      'palette.json': palette,
+      'frames/frame_00.json': blank,
+      'candidates/first/candidate_00.json': blank,
+      'candidates/first/lock.json': { candidateId: 'candidate_00', recipe: {} },
+      'candidates/middle/candidate_00.json': blank,
+      'candidates/middle/lock.json': { candidateId: 'candidate_00', recipe: {} },
+    });
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    expect(store.computeActiveStage('AfterMiddle')).toBe('last');
+  });
+
   it('rejects path-traversal in the project name', () => {
     const store = createProjectStore({ repoRoot: tmpRoot });
     expect(() => store.computeActiveStage('../escape')).toThrow(/invalid project name/i);
+  });
+});
+
+// Middle-stage support — issue #15.
+//
+// The project store treats middle the same way it treats first: candidates
+// live in candidates/middle/, allocateCandidateIds and readCandidates and
+// writeCandidate all accept the stage as a typed parameter so a stray edit
+// can never hit the wrong directory. writeLock freezes the locked candidate
+// into a per-stage canonical frame slot — for middle we keep a placeholder
+// filename so #18's tween step has a known location to overwrite once the
+// frame count is chosen.
+
+describe('projectStore — middle stage', () => {
+  const palette = { version: 1, colors: [
+    { index: 0, rgba: '00000000' },
+    { index: 1, rgba: 'FF0000FF' },
+  ] };
+  const blank = serializePixelGrid(createPixelGrid({ width: 2, height: 2 }));
+
+  function lockedFirstProject(name: string): string {
+    // A project where the first stage is locked and the middle stage now
+    // has two candidates — the typical state at the start of #15's flow.
+    const candidateGrid = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const middleA = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 0, 1);
+    const middleB = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 1, 1);
+    const lockedFirst = extractRecipe(candidateGrid);
+    writeProject(name, {
+      'palette.json': palette,
+      'frames/frame_00.json': serializePixelGrid(candidateGrid),
+      'candidates/first/candidate_00.json': serializePixelGrid(candidateGrid),
+      'candidates/first/lock.json': { candidateId: 'candidate_00', recipe: lockedFirst },
+      'candidates/first/recipe.json': lockedFirst,
+      'candidates/middle/candidate_00.json': serializePixelGrid(middleA),
+      'candidates/middle/candidate_01.json': serializePixelGrid(middleB),
+    });
+    return path.join(tmpRoot, 'projects', name);
+  }
+
+  it('readCandidates returns middle-stage candidates from candidates/middle/', () => {
+    lockedFirstProject('MidRead');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const candidates = store.readCandidates('MidRead', 'middle');
+    expect(candidates.map((c) => c.id)).toEqual(['candidate_00', 'candidate_01']);
+  });
+
+  it('allocateCandidateIds runs on the middle directory independently of first', () => {
+    lockedFirstProject('MidAlloc');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    // first has one candidate already; middle has two. Allocations advance
+    // each stage's own sequence.
+    expect(store.allocateCandidateIds('MidAlloc', 'middle', 2)).toEqual([
+      'candidate_02',
+      'candidate_03',
+    ]);
+  });
+
+  it('appendCandidates writes to candidates/middle/ and returns the new ids', () => {
+    const projectDir = lockedFirstProject('MidAppend');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 1, 1);
+    const ids = store.appendCandidates('MidAppend', 'middle', [g]);
+    expect(ids).toEqual(['candidate_02']);
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(projectDir, 'candidates', 'middle', 'candidate_02.json'),
+        'utf8',
+      ),
+    );
+    expect(raw).toEqual(serializePixelGrid(g));
+    // first stage untouched.
+    expect(
+      fs.existsSync(path.join(projectDir, 'candidates', 'first', 'candidate_00.json')),
+    ).toBe(true);
+  });
+
+  it('writeCandidate persists to candidates/middle/<id>.json', () => {
+    const projectDir = lockedFirstProject('MidWriteCand');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const edited = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 1, 1);
+    store.writeCandidate('MidWriteCand', 'middle', 'candidate_00', edited);
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(projectDir, 'candidates', 'middle', 'candidate_00.json'),
+        'utf8',
+      ),
+    );
+    expect(raw).toEqual(serializePixelGrid(edited));
+  });
+
+  it('writeLock + readLock round-trips a middle-stage lock', () => {
+    const projectDir = lockedFirstProject('MidLock');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const middleGrid = setPixel(createPixelGrid({ width: 2, height: 2 }), 1, 0, 1);
+    const recipe = extractRecipe(middleGrid);
+    store.writeLock('MidLock', 'middle', {
+      candidateId: 'candidate_00',
+      grid: middleGrid,
+      recipe,
+    });
+
+    // Marker + recipe land in candidates/middle/.
+    const lockRaw = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'candidates', 'middle', 'lock.json'), 'utf8'),
+    );
+    expect(lockRaw.candidateId).toBe('candidate_00');
+    expect(lockRaw.recipe).toEqual(recipe);
+    const recipeRaw = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'candidates', 'middle', 'recipe.json'), 'utf8'),
+    );
+    expect(recipeRaw).toEqual(recipe);
+
+    // Round-trip via readLock.
+    expect(store.readLock('MidLock', 'middle')).toEqual({
+      candidateId: 'candidate_00',
+      recipe,
+    });
+
+    // Locking middle does NOT overwrite frame_00 — the first stage's
+    // canonical frame is preserved. The middle stage gets its own
+    // placeholder slot until the tween step chooses the real frame count.
+    const frame00 = JSON.parse(
+      fs.readFileSync(path.join(projectDir, 'frames', 'frame_00.json'), 'utf8'),
+    );
+    // frame_00 still represents the first-frame grid; we verify by reading
+    // it back and confirming it's the candidate_00 grid from the first
+    // stage (pixel at (0,0) = 1, others = 0).
+    expect(frame00.pixels).toEqual([
+      [1, 0],
+      [0, 0],
+    ]);
+
+    // A middle frame placeholder is written so the tween step has a known
+    // location to overwrite. The filename is stable so the watcher can fire
+    // a deterministic frame-changed event.
+    const middlePlaceholderPath = path.join(projectDir, 'frames', 'frame_middle.json');
+    expect(fs.existsSync(middlePlaceholderPath)).toBe(true);
+    const middleRaw = JSON.parse(fs.readFileSync(middlePlaceholderPath, 'utf8'));
+    expect(middleRaw).toEqual(serializePixelGrid(middleGrid));
+  });
+
+  it('refuses to overwrite an existing middle lock', () => {
+    lockedFirstProject('MidRelock');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    const g = setPixel(createPixelGrid({ width: 2, height: 2 }), 0, 0, 1);
+    const recipe = extractRecipe(g);
+    store.writeLock('MidRelock', 'middle', { candidateId: 'candidate_00', grid: g, recipe });
+    expect(() =>
+      store.writeLock('MidRelock', 'middle', {
+        candidateId: 'candidate_01',
+        grid: g,
+        recipe,
+      }),
+    ).toThrow(/already locked/i);
+  });
+
+  it('excludes lock.json + recipe.json from middle-stage candidate listing', () => {
+    const projectDir = lockedFirstProject('MidFilter');
+    const store = createProjectStore({ repoRoot: tmpRoot });
+    fs.writeFileSync(
+      path.join(projectDir, 'candidates', 'middle', 'lock.json'),
+      JSON.stringify({ candidateId: 'candidate_00', recipe: {} }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(projectDir, 'candidates', 'middle', 'recipe.json'),
+      JSON.stringify({ width: 2, height: 2 }),
+      'utf8',
+    );
+    expect(store.readCandidates('MidFilter', 'middle').map((c) => c.id)).toEqual([
+      'candidate_00',
+      'candidate_01',
+    ]);
   });
 });
